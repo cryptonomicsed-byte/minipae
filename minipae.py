@@ -93,8 +93,14 @@ def _lift_x(x: int):
     return (x, y if y % 2 == 0 else P - y)
 
 
+def _validate_seckey(seckey: int) -> None:
+    if not (1 <= seckey <= N - 1):
+        raise ValueError("invalid secret key: must be in [1, n-1]")
+
+
 def pubkey_from_secret(seckey: int) -> bytes:
     """BIP-340 x-only pubkey (32 bytes)."""
+    _validate_seckey(seckey)
     pt = _point_mul(seckey)
     return pt[0].to_bytes(32, "big")
 
@@ -108,8 +114,7 @@ def schnorr_sign(msg: bytes, seckey: int, aux: bytes) -> bytes:
     """BIP-340 Schnorr signature (64 bytes: r || s), full spec incl. even-y
     adjustments and tagged hashes — compatible with nostr/buzz."""
     d0 = seckey
-    if not (1 <= d0 <= N - 1):
-        raise ValueError("invalid secret key")
+    _validate_seckey(d0)
     P = _point_mul(d0)
     d = d0 if P[1] % 2 == 0 else N - d0          # even-y pubkey convention
     t = (d ^ int.from_bytes(_tagged_hash("BIP0340/aux", aux), "big")).to_bytes(32, "big")
@@ -149,8 +154,14 @@ def schnorr_verify(msg: bytes, pubkey: bytes, sig: bytes) -> bool:
 # --------------------------------------------------------------------------
 _NIP44_VERSION = 2
 _NIP44_MIN_PLAINTEXT = 1
-_NIP44_MAX_PLAINTEXT = 0xFFFFFFFF
 _NIP44_EXTENDED_PREFIX_THRESHOLD = 65536
+# Spec (NIP-44 44.md) defines max_plaintext_size as 2^32-1 with a 6-byte
+# extended-length prefix for len >= extended_prefix_threshold. In practice no
+# interop test vector (paulmillr/nip44 reference suite) exercises that
+# branch — everything >= 65536 is explicitly listed as invalid, and the
+# largest valid vector tops out at 65535 — so real-world tooling caps here.
+# Matching that keeps minipae's engrams portable to standard Nostr clients.
+_NIP44_MAX_PLAINTEXT = _NIP44_EXTENDED_PREFIX_THRESHOLD - 1
 
 
 def _hmac_sha256(key: bytes, msg: bytes) -> bytes:
@@ -176,8 +187,12 @@ def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
 
 def conversation_key(agent_seckey: bytes, owner_pubkey: bytes) -> bytes:
     """NIP-44 conversation key: HKDF-extract(ECDH_x, salt='nip44-v2')."""
-    x = _point_mul(int.from_bytes(agent_seckey, "big"),
-                   _lift_x(int.from_bytes(owner_pubkey, "big")))[0]
+    seckey_int = int.from_bytes(agent_seckey, "big")
+    _validate_seckey(seckey_int)
+    pubkey_point = _lift_x(int.from_bytes(owner_pubkey, "big"))
+    if pubkey_point is None:
+        raise ValueError("invalid public key: not a valid curve point")
+    x = _point_mul(seckey_int, pubkey_point)[0]
     return _hkdf_extract(x.to_bytes(32, "big"), b"nip44-v2")
 
 
@@ -189,9 +204,9 @@ def _message_keys(conversation_key_: bytes, nonce: bytes) -> tuple:
 def _calc_padded_len(plaintext_len: int) -> int:
     if plaintext_len <= 32:
         return 32
-    next_pow2 = 1 << (plaintext_len - 1).bit_length()
-    chunk = max(64, next_pow2 // 2)
-    return ((plaintext_len + chunk - 1) // chunk) * chunk
+    next_power = 1 << (plaintext_len - 1).bit_length()
+    chunk = 32 if next_power <= 256 else next_power // 8
+    return chunk * ((plaintext_len - 1) // chunk + 1)
 
 
 def _pad(plaintext: bytes) -> bytes:
@@ -203,17 +218,25 @@ def _pad(plaintext: bytes) -> bytes:
 
 
 def _unpad(padded: bytes) -> bytes:
+    """Mirrors the spec's unpad(): validates the declared length against the
+    expected calc_padded_len() total, not just that trailing bytes are zero —
+    a message truncated/extended without touching the trailing zero run would
+    otherwise decrypt to a wrong-but-plausible plaintext."""
     prefix = int.from_bytes(padded[0:2], "big")
     if prefix == 0:
+        if len(padded) < 6:
+            raise ValueError("invalid padding")
         n = int.from_bytes(padded[2:6], "big")
-        body = padded[6:]
+        if n < _NIP44_EXTENDED_PREFIX_THRESHOLD:
+            raise ValueError("invalid padding")
+        prefix_len = 6
     else:
         n = prefix
-        body = padded[2:]
-    # verify the trailing padding is all zero
-    if body[n:] != b"\x00" * (len(body) - n):
+        prefix_len = 2
+    unpadded = padded[prefix_len:prefix_len + n]
+    if n == 0 or len(unpadded) != n or len(padded) != prefix_len + _calc_padded_len(n):
         raise ValueError("invalid padding")
-    return body[:n]
+    return unpadded
 
 
 # --- RFC 8439 ChaCha20 (12-byte nonce, 32-bit counter) in pure Python ---
@@ -272,16 +295,19 @@ def _ct_equal(a: bytes, b: bytes) -> bool:
     return hmac.compare_digest(a, b)
 
 
-def nip44_encrypt(plaintext: str, conversation_key_: bytes) -> str:
+def nip44_encrypt_with_nonce(plaintext: str, conversation_key_: bytes, nonce: bytes) -> str:
     data = plaintext.encode("utf-8")
     if not (_NIP44_MIN_PLAINTEXT <= len(data) <= _NIP44_MAX_PLAINTEXT):
         raise ValueError("plaintext size outside NIP-44 limits")
-    nonce = secrets.token_bytes(32)
     chacha_key, chacha_nonce, hmac_key = _message_keys(conversation_key_, nonce)
     padded = _pad(data)
     ciphertext = _chacha20_encrypt(chacha_key, chacha_nonce, padded)
     mac = _hmac_sha256(hmac_key, nonce + ciphertext)  # full 32-byte HMAC over nonce||ct
     return base64.b64encode(bytes([_NIP44_VERSION]) + nonce + ciphertext + mac).decode()
+
+
+def nip44_encrypt(plaintext: str, conversation_key_: bytes) -> str:
+    return nip44_encrypt_with_nonce(plaintext, conversation_key_, secrets.token_bytes(32))
 
 
 def nip44_decrypt(payload: str, conversation_key_: bytes) -> str:
@@ -384,12 +410,14 @@ async def publish(relay: str, event: dict) -> dict:
                 return {"ok": bool(msg[1]), "message": msg[2] if len(msg) > 2 else ""}
 
 
-async def query(relay: str, authors: list[str]) -> list[dict]:
+async def query(relay: str, authors: list[str], since: int | None = None) -> list[dict]:
     import websockets
     events = []
+    filt = {"kinds": [KIND_AGENT_ENGRAM], "authors": authors, "limit": 500}
+    if since is not None:
+        filt["since"] = since
     async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024) as ws:
-        await ws.send(json.dumps(["REQ", "minipae", {"kinds": [KIND_AGENT_ENGRAM],
-                                                     "authors": authors, "limit": 500}]))
+        await ws.send(json.dumps(["REQ", "minipae", filt]))
         while True:
             msg = json.loads(await asyncio_wait(ws))
             if msg[0] == "EVENT":
@@ -403,6 +431,177 @@ async def query(relay: str, authors: list[str]) -> list[dict]:
 async def asyncio_wait(ws):
     import asyncio
     return await asyncio.wait_for(ws.recv(), timeout=30)
+
+
+# --------------------------------------------------------------------------
+# NIP-65 relay list (kind:10002) — "outbox model" relay discovery
+# --------------------------------------------------------------------------
+KIND_RELAY_LIST = 10002
+
+
+def parse_relay_list(ev: dict) -> list[tuple[str, str | None]]:
+    """Parse a kind:10002 event's r-tags into (url, marker) pairs.
+    marker is 'read', 'write', or None (both)."""
+    out = []
+    for t in ev.get("tags", []):
+        if len(t) >= 2 and t[0] == "r":
+            marker = t[2] if len(t) >= 3 and t[2] in ("read", "write") else None
+            out.append((t[1], marker))
+    return out
+
+
+async def fetch_relay_list(relay: str, pubkey_hex: str) -> list[tuple[str, str | None]]:
+    """Fetch the newest kind:10002 event for pubkey_hex from `relay`, return
+    its parsed relay list. Empty list if the author has never published one."""
+    import websockets
+    async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024) as ws:
+        await ws.send(json.dumps(["REQ", "minipae-r", {"kinds": [KIND_RELAY_LIST],
+                                                        "authors": [pubkey_hex], "limit": 5}]))
+        newest = None
+        while True:
+            msg = json.loads(await asyncio_wait(ws))
+            if msg[0] == "EVENT":
+                ev = msg[2]
+                if newest is None or ev["created_at"] > newest["created_at"]:
+                    newest = ev
+            elif msg[0] == "EOSE":
+                await ws.send(json.dumps(["CLOSE", "minipae-r"]))
+                break
+    return parse_relay_list(newest) if newest else []
+
+
+def relays_for_write(relay_list: list[tuple[str, str | None]]) -> list[str]:
+    return [url for url, marker in relay_list if marker in (None, "write")]
+
+
+def relays_for_read(relay_list: list[tuple[str, str | None]]) -> list[str]:
+    return [url for url, marker in relay_list if marker in (None, "read")]
+
+
+async def query_multi(relays: list[str], authors: list[str], since: int | None = None) -> list[dict]:
+    """Query several relays in parallel, dedup by event id, return merged list.
+    A single unreachable/slow relay does not fail the whole query."""
+    import asyncio
+
+    async def _one(relay: str) -> list[dict]:
+        try:
+            return await query(relay, authors, since=since)
+        except Exception:
+            return []
+
+    results = await asyncio.gather(*[_one(r) for r in relays])
+    seen: dict[str, dict] = {}
+    for evs in results:
+        for ev in evs:
+            seen[ev["id"]] = ev
+    return list(seen.values())
+
+
+async def subscribe_stream(relay: str, authors: list[str], since: int | None = None):
+    """Persistent subscription: yields engram events as they arrive, including
+    ones published live AFTER EOSE (does not close on EOSE like query())."""
+    import asyncio
+    import websockets
+    filt = {"kinds": [KIND_AGENT_ENGRAM], "authors": authors, "limit": 500}
+    if since is not None:
+        filt["since"] = since
+    async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024,
+                                   ping_interval=20, ping_timeout=20) as ws:
+        await ws.send(json.dumps(["REQ", "minipae-watch", filt]))
+        while True:
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=None))
+            if msg[0] == "EVENT":
+                yield msg[2]
+            elif msg[0] == "EOSE":
+                continue  # historical backlog done; stay open for live events
+            elif msg[0] == "NOTICE":
+                continue
+
+
+def build_relay_list_event(relays: list[tuple[str, str | None]], seckey: bytes) -> dict:
+    """Build (unsigned-then-signed) an unencrypted kind:10002 relay list event."""
+    pubkey = pubkey_from_secret(int.from_bytes(seckey, "big"))
+    tags = [["r", url] if marker is None else ["r", url, marker] for url, marker in relays]
+    ev = {
+        "kind": KIND_RELAY_LIST,
+        "pubkey": pubkey.hex(),
+        "created_at": int(time.time()),
+        "tags": tags,
+        "content": "",
+    }
+    ev["id"] = event_id(ev)
+    ev["sig"] = schnorr_sign(bytes.fromhex(ev["id"]), int.from_bytes(seckey, "big"),
+                             secrets.token_bytes(32)).hex()
+    return ev
+
+
+# --------------------------------------------------------------------------
+# local sync cache — slug/dtag -> head index, so repeat reads only fetch
+# events newer than what we've already seen (via NIP-01 `since`)
+# --------------------------------------------------------------------------
+CACHE_DIR = os.environ.get("NIPAE_CACHE_DIR", os.path.expanduser("~/.minipae/cache"))
+
+
+def _cache_path(agent_pub_hex: str, owner_pub_hex: str) -> str:
+    key = hashlib.sha256(f"{agent_pub_hex}:{owner_pub_hex}".encode()).hexdigest()[:32]
+    return os.path.join(CACHE_DIR, f"{key}.json")
+
+
+def load_cache(agent_pub_hex: str, owner_pub_hex: str) -> dict[str, dict]:
+    """Return {dtag: event} of the last known heads, or {} if no cache yet."""
+    path = _cache_path(agent_pub_hex, owner_pub_hex)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_cache(agent_pub_hex: str, owner_pub_hex: str, heads: dict[str, dict]) -> None:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = _cache_path(agent_pub_hex, owner_pub_hex)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(heads, f)
+    os.replace(tmp, path)  # atomic on POSIX — no torn/partial cache on crash
+
+
+def cache_since(cache: dict[str, dict]) -> int | None:
+    """Newest created_at across cached heads, used as the `since` filter for
+    the next relay query — we only need events strictly newer than this."""
+    if not cache:
+        return None
+    return max(ev["created_at"] for ev in cache.values())
+
+
+def merge_heads(cached: dict[str, dict], fresh: dict[str, dict]) -> dict[str, dict]:
+    """Combine cached heads with freshly queried ones, newest created_at wins
+    per dtag. `fresh` is trusted as sig-verified (comes out of select_heads)."""
+    merged = dict(cached)
+    for dtag, ev in fresh.items():
+        cur = merged.get(dtag)
+        if cur is None or ev["created_at"] > cur["created_at"]:
+            merged[dtag] = ev
+    return merged
+
+
+def synced_heads(relays: list[str], agent_pub_hex: str, owner_pub_hex: str, kc: bytes) -> dict[str, dict]:
+    """Incremental read: replay only events newer than the local cache,
+    merge into cached heads, persist, return the combined head set."""
+    import asyncio
+    cache = load_cache(agent_pub_hex, owner_pub_hex)
+    since = cache_since(cache)
+    # small overlap window: relay propagation delay / multi-relay skew means
+    # the exact cached max isn't a safe cutoff — duplicates are harmless
+    # (select_heads/merge_heads dedup by created_at), missed updates aren't.
+    since_arg = max(0, since - 30) if since is not None else None
+    events = asyncio.run(query_multi(relays, [agent_pub_hex], since=since_arg))
+    fresh = select_heads(events, kc)
+    merged = merge_heads(cache, fresh)
+    save_cache(agent_pub_hex, owner_pub_hex, merged)
+    return merged
 
 
 # --------------------------------------------------------------------------
@@ -441,30 +640,127 @@ def _load_keys():
         print("NIPAE_NSEC not set (agent secret key, hex or nsec1...)", file=sys.stderr)
         sys.exit(2)
     if nsec.startswith("nsec1"):
-        nsec = bech32_decode(nsec)
-    seckey = bytes.fromhex(nsec)
+        seckey = nsec_decode(nsec)
+    else:
+        seckey = bytes.fromhex(nsec)
     owner = os.environ.get("NIPAE_OWNER", "").strip()
     if not owner:
         owner = pubkey_from_secret(int.from_bytes(seckey, "big")).hex()
+    elif owner.startswith("npub1"):
+        owner = npub_decode(owner).hex()
     return seckey, bytes.fromhex(owner)
 
 
-def bech32_decode(s: str) -> str:
-    import string
-    charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-    data = [charset.find(c) for c in s.lower() if c in charset]
-    # drop checksum (last 6 chars), convert 5-bit -> 8-bit
-    data = data[:-6]
+# --------------------------------------------------------------------------
+# bech32 (BIP-173) — used by NIP-19 nsec1/npub1 encoding, checksum verified
+# --------------------------------------------------------------------------
+_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+_BECH32_CONST = 1  # bech32 (not bech32m) per NIP-19
+
+
+def _bech32_polymod(values: list[int]) -> int:
+    gen = [0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3]
+    chk = 1
+    for v in values:
+        b = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ v
+        for i in range(5):
+            chk ^= gen[i] if ((b >> i) & 1) else 0
+    return chk
+
+
+def _bech32_hrp_expand(hrp: str) -> list[int]:
+    return [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+
+
+def _bech32_create_checksum(hrp: str, data: list[int]) -> list[int]:
+    values = _bech32_hrp_expand(hrp) + data
+    polymod = _bech32_polymod(values + [0, 0, 0, 0, 0, 0]) ^ _BECH32_CONST
+    return [(polymod >> 5 * (5 - i)) & 31 for i in range(6)]
+
+
+def _convertbits(data: bytes, frombits: int, tobits: int, pad: bool = True) -> list[int]:
     acc = 0
     bits = 0
-    out = bytearray()
-    for d in data:
-        acc = (acc << 5) | d
-        bits += 5
-        if bits >= 8:
-            bits -= 8
-            out.append((acc >> bits) & 0xFF)
-    return out.hex()
+    ret = []
+    maxv = (1 << tobits) - 1
+    max_acc = (1 << (frombits + tobits - 1)) - 1
+    for value in data:
+        if value < 0 or (value >> frombits):
+            raise ValueError("invalid byte for base conversion")
+        acc = ((acc << frombits) | value) & max_acc
+        bits += frombits
+        while bits >= tobits:
+            bits -= tobits
+            ret.append((acc >> bits) & maxv)
+    if pad:
+        if bits:
+            ret.append((acc << (tobits - bits)) & maxv)
+    elif bits >= frombits or ((acc << (tobits - bits)) & maxv):
+        raise ValueError("invalid padding in base conversion")
+    return ret
+
+
+def bech32_encode(hrp: str, data: bytes) -> str:
+    values = _convertbits(data, 8, 5, pad=True)
+    checksum = _bech32_create_checksum(hrp, values)
+    return hrp + "1" + "".join(_BECH32_CHARSET[d] for d in values + checksum)
+
+
+def bech32_decode_raw(s: str) -> tuple[str, bytes]:
+    """Full bech32 decode: HRP + checksum verified, returns (hrp, payload_bytes)."""
+    s_orig = s
+    s = s.strip()
+    if any(ord(c) < 33 or ord(c) > 126 for c in s):
+        raise ValueError("bech32: invalid character range")
+    if s.lower() != s and s.upper() != s:
+        raise ValueError("bech32: mixed case")
+    s = s.lower()
+    pos = s.rfind("1")
+    if pos < 1 or pos + 7 > len(s):
+        raise ValueError("bech32: no separator / too short")
+    hrp = s[:pos]
+    data_part = s[pos + 1:]
+    if any(c not in _BECH32_CHARSET for c in data_part):
+        raise ValueError("bech32: invalid data character")
+    data = [_BECH32_CHARSET.find(c) for c in data_part]
+    if _bech32_polymod(_bech32_hrp_expand(hrp) + data) != _BECH32_CONST:
+        raise ValueError(f"bech32: checksum mismatch ({s_orig!r})")
+    payload = _convertbits(data[:-6], 5, 8, pad=False)
+    return hrp, bytes(payload)
+
+
+def bech32_decode(s: str) -> str:
+    """Legacy helper: decode any bech32 string (nsec1/npub1/etc.) to hex payload,
+    with checksum verified — raises on tamper/typo instead of silently truncating."""
+    _hrp, payload = bech32_decode_raw(s)
+    return payload.hex()
+
+
+def nsec_encode(seckey: bytes) -> str:
+    return bech32_encode("nsec", seckey)
+
+
+def nsec_decode(nsec: str) -> bytes:
+    hrp, payload = bech32_decode_raw(nsec)
+    if hrp != "nsec":
+        raise ValueError(f"expected nsec1..., got hrp={hrp!r}")
+    if len(payload) != 32:
+        raise ValueError("nsec: payload must be 32 bytes")
+    return payload
+
+
+def npub_encode(pubkey: bytes) -> str:
+    return bech32_encode("npub", pubkey)
+
+
+def npub_decode(npub: str) -> bytes:
+    hrp, payload = bech32_decode_raw(npub)
+    if hrp != "npub":
+        raise ValueError(f"expected npub1..., got hrp={hrp!r}")
+    if len(payload) != 32:
+        raise ValueError("npub: payload must be 32 bytes")
+    return payload
 
 
 def main():
@@ -476,27 +772,52 @@ def main():
     p = sub.add_parser("set"); p.add_argument("slug"); p.add_argument("value")
     p = sub.add_parser("rm");  p.add_argument("slug")
     p = sub.add_parser("self-owner", help="print this agent's own pubkey (owner default)")
+    p = sub.add_parser("relays", help="show/publish this agent's NIP-65 relay list")
+    p.add_argument("action", choices=["show", "set"], nargs="?", default="show")
+    p.add_argument("urls", nargs="*", help="for 'set': relay1[:read|write] relay2 ...")
+    sub.add_parser("watch", help="stream live engram updates (Ctrl+C to stop)")
     args = ap.parse_args()
 
     if args.cmd == "gen-key":
         sk = secrets.token_bytes(32)
+        pk = pubkey_from_secret(int.from_bytes(sk, "big"))
         print(sk.hex())
-        print("# pubkey (owner-facing):", pubkey_from_secret(int.from_bytes(sk, "big")).hex(), file=sys.stderr)
+        print("# nsec:", nsec_encode(sk), file=sys.stderr)
+        print("# pubkey (owner-facing):", pk.hex(), file=sys.stderr)
+        print("# npub:", npub_encode(pk), file=sys.stderr)
         return
     if args.cmd == "self-owner":
         sk, _ = _load_keys()
-        print(pubkey_from_secret(int.from_bytes(sk, "big")).hex())
+        pk = pubkey_from_secret(int.from_bytes(sk, "big"))
+        print(pk.hex())
+        print("# npub:", npub_encode(pk), file=sys.stderr)
         return
 
     import asyncio
-    relay = os.environ.get("NIPAE_RELAY", "wss://relay.damus.io")
+    default_relay = os.environ.get("NIPAE_RELAY", "wss://relay.damus.io")
     sk, owner = _load_keys()
     agent_pub = pubkey_from_secret(int.from_bytes(sk, "big"))
     kc = conversation_key(sk, owner)
 
+    def _configured_relays() -> list[str]:
+        """NIPAE_RELAYS (comma-separated) wins if set; else NIP-65 discovery
+        against NIPAE_RELAY; else just NIPAE_RELAY/default."""
+        env_relays = os.environ.get("NIPAE_RELAYS", "").strip()
+        if env_relays:
+            return [r.strip() for r in env_relays.split(",") if r.strip()]
+        try:
+            rl = asyncio.run(fetch_relay_list(default_relay, agent_pub.hex()))
+        except Exception:
+            rl = []
+        if rl:
+            urls = relays_for_read(rl) or relays_for_write(rl)
+            if urls:
+                return urls
+        return [default_relay]
+
     if args.cmd == "ls":
-        events = asyncio.run(query(relay, [agent_pub.hex()]))
-        heads = select_heads(events, kc)
+        relays = _configured_relays()
+        heads = synced_heads(relays, agent_pub.hex(), owner.hex(), kc)
         for dtag, ev in sorted(heads.items()):
             try:
                 body = decode_body(ev, kc)
@@ -510,8 +831,8 @@ def main():
     elif args.cmd == "get":
         if not validate_slug(args.slug):
             print(f"invalid slug: {args.slug}", file=sys.stderr); sys.exit(1)
-        events = asyncio.run(query(relay, [agent_pub.hex()]))
-        heads = select_heads(events, kc)
+        relays = _configured_relays()
+        heads = synced_heads(relays, agent_pub.hex(), owner.hex(), kc)
         want = d_tag(args.slug, kc)
         ev = heads.get(want)
         if not ev:
@@ -526,15 +847,54 @@ def main():
             print(f"invalid slug: {args.slug}", file=sys.stderr); sys.exit(1)
         body = {"slug": args.slug, "value": args.value}
         ev = build_event(args.slug, body, sk, owner)
-        res = asyncio.run(publish(relay, ev))
+        res = asyncio.run(publish(default_relay, ev))
         print(f"set {args.slug}: accepted={res.get('ok')} {res.get('message','')}")
     elif args.cmd == "rm":
         if not validate_slug(args.slug):
             print(f"invalid slug: {args.slug}", file=sys.stderr); sys.exit(1)
         body = {"slug": args.slug, "value": None}
         ev = build_event(args.slug, body, sk, owner)
-        res = asyncio.run(publish(relay, ev))
+        res = asyncio.run(publish(default_relay, ev))
         print(f"rm {args.slug}: accepted={res.get('ok')} {res.get('message','')}")
+    elif args.cmd == "relays":
+        if args.action == "show":
+            rl = asyncio.run(fetch_relay_list(default_relay, agent_pub.hex()))
+            if not rl:
+                print("no NIP-65 relay list published", file=sys.stderr)
+            for url, marker in rl:
+                print(f"{url}\t{marker or 'read+write'}")
+        else:  # set
+            parsed = []
+            for u in args.urls:
+                if ":" in u.split("//", 1)[-1] and u.rsplit(":", 1)[-1] in ("read", "write"):
+                    url, marker = u.rsplit(":", 1)
+                    parsed.append((url, marker))
+                else:
+                    parsed.append((u, None))
+            ev = build_relay_list_event(parsed, sk)
+            res = asyncio.run(publish(default_relay, ev))
+            print(f"relays set: accepted={res.get('ok')} {res.get('message','')}")
+    elif args.cmd == "watch":
+        relays = _configured_relays()
+        print(f"watching {relays} for {agent_pub.hex()} (Ctrl+C to stop)...", file=sys.stderr)
+
+        async def _watch():
+            async for ev in subscribe_stream(relays[0], [agent_pub.hex()]):
+                try:
+                    body = decode_body(ev, kc)
+                except Exception:
+                    continue
+                slug = body.get("slug")
+                val = body.get("value")
+                if val is None:
+                    print(f"[tombstone] {slug}")
+                else:
+                    print(f"[update]    {slug}\t({len(str(val))} bytes)")
+
+        try:
+            asyncio.run(_watch())
+        except KeyboardInterrupt:
+            pass
     else:
         ap.print_help()
 
