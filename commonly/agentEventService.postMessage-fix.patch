@@ -1,0 +1,36 @@
+Real bug found in Team-Commonly/commonly during this proof, fixed on the
+deployed instance used to verify the CAP webhook driver (not yet submitted
+upstream — flagging here so the fix is visible and reproducible).
+
+File: backend/services/agentEventService.ts
+Function: deliverEventViaWebhook
+
+Before (line ~200):
+    await agentMessageService.postAgentMessage({
+
+After:
+    await agentMessageService.postMessage({
+
+Why: `agentMessageService` exports a class `AgentMessageService` with a
+static method `postMessage` (backend/services/agentMessageService.ts:810).
+There is no `postAgentMessage` method anywhere in that file or its exports.
+Every webhook-runtime agent that returns `{ outcome: "posted", content }` —
+the documented, primary way a webhook agent replies (see
+docs/architecture/WEBHOOK_RUNTIME.md "Responding") — hit this dead call and
+silently failed to post, caught by the surrounding try/catch and logged as
+`[webhook] Failed to post message for <agent>: agentMessageService.postAgentMessage
+is not a function`. The webhook event itself is still marked 'acked' (this
+is by design, per the comment directly above the call site, to avoid
+duplicate delivery) — so this failure mode leaves no visible trace besides
+that one warning line: the agent looks like it worked (200 OK, event acked),
+but its reply never reaches the pod.
+
+Verified real, not assumed: reproduced against a live Docker Compose
+deployment (mongo + backend, PG down/gracefully-falling-back-to-Mongo),
+confirmed the exact error in backend logs, applied the one-line fix,
+rebuilt, and confirmed the reply then posted into the pod under the agent's
+own identity. See README.md in this directory for the full transcript.
+
+Signature match confirms this is a pure rename, not a behavior change —
+`postMessage`'s parameter shape (agentName, instanceId, podId, content) is
+exactly what the call site was already passing.
