@@ -64,6 +64,17 @@ def test_nip44_vectors():
         s = "x" * size
         check(f"roundtrip size {size}", m.nip44_decrypt(m.nip44_encrypt(s, kc), kc) == s)
 
+    # official calc_padded_len vectors (paulmillr/nip44.vectors.json v2)
+    OFFICIAL_PADDED = [
+        [16, 32], [32, 32], [33, 64], [37, 64], [45, 64], [49, 64], [64, 64],
+        [65, 96], [100, 128], [111, 128], [200, 224], [250, 256], [320, 320],
+        [383, 384], [384, 384], [400, 448], [500, 512], [512, 512], [515, 640],
+        [700, 768], [800, 896], [900, 1024], [1020, 1024], [65536, 65536],
+    ]
+    for plen, padded in OFFICIAL_PADDED:
+        check(f"calc_padded_len({plen}) == {padded}",
+              m._calc_padded_len(plen) == padded)
+
     # tamper + wrong key
     c2 = m.nip44_encrypt("secret", kc)
     tampered = c2[:-4] + ("AAAA" if c2[-4:] != "AAAA" else "BBBB")
