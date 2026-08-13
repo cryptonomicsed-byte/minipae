@@ -39,6 +39,25 @@ Phases 1-4 as agreed. Full text: /tmp/plan-v3.md (Mac), ~/genteam/plan-v3.md (Fo
 7. **Phase 4**: GenOffice document-worker service + BPO pilot (de_* vocabulary day one).
 8. **Final**: push locked PLAN.md to repo + full verification pass.
 
+## Flagged candidate (user-approved eval): deepseek-ai/deepseek-harness
+- What: DeepSeek's official agent harness, MIT, TypeScript, "everything is a plugin" (vendored Cordis).
+  ~40 packages: agent loop (session/tools/plan/todo/subagent/workflow/guard), capability seams
+  (shell/fs/lsp/web/e2b sandbox/terminal), skill registry + catalog, Claude Code/Codex hook bridges,
+  self-modification, ACP server, JSON-RPC SDK, Python SDK + bundled runtime. Repo: ~/deepseek-harness (198MB).
+- Why flagged: the ONLY runtime built for a provider with a live key in our stack (vault /deepseek = working;
+  openai dead, claude $0). Chinese origin = embargo-proof by geography — first Layer-3 candidate with no US
+  cloud choke point. Plugin seams match the add-layers-never-replace doctrine.
+- Engine check: node ^22.19 || >=24 — VPS 22.23.1 and Fold 4 26.2.0 both qualify. Key must be read inside
+  the session (vault → file 0600), never argv.
+- Candidate uses: (a) Layer-3 runtime in genteam container as DeepSeek-native agent; (b) minipae memory-bus
+  plugin via skill/capability seams (mem/genteam/*, mem/hermes/*); (c) shared skill catalog substrate
+  (Phase 3); (d) ACP delegate lane from Hermes/herdr; (e) e2b/landlock sandbox for hardened execution;
+  (f) BENCHMARK.md for BPO pilot quality gate (Phase 4).
+- Caveats: released 2026-08-13 (day zero), pre-release stance — "foundation over blast radius", no compat
+  promises (SCHEMA_VERSION/SESSION_FORMAT_VERSION may break). Treat as eval candidate, not a pillar.
+- Next move (approved): keyless snapshot tests on VPS (`pnpm run test:snapshot`), verify BENCHMARK claims,
+  THEN decide slotting as DeepSeek-native Layer-3 runtime. Do NOT swap anything (add layers, never replace).
+
 ## Testing protocol (orchestrator runs, panels never self-certify)
 - Offline: `NIPAE_LIVE=1 python3 tests/run_tests.py` (71 tests).
 - Live: minipae CLI readback (`ls`/`get`) against the target relay AFTER any write.
