@@ -1,0 +1,10 @@
+# keys — never commit agent secrets
+*.nsec*
+*.pk.txt
+.nsec
+.pub.txt
+
+# python
+__pycache__/
+*.pyc
+.venv/
