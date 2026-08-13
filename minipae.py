@@ -353,10 +353,10 @@ def validate_slug(slug: str) -> bool:
     for part in rest.split("/"):
         if not part or len(part) > 64:
             return False
-        if not (part[0].isalnum() or part[0] == "_"):
+        if not (part[0].islower() or part[0] in "0123456789_"):
             return False
         for ch in part:
-            if not (ch.isalnum() or ch in "_-"):
+            if not (ch.islower() or ch in "0123456789_-"):
                 return False
     return True
 
