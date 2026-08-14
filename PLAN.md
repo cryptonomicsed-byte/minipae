@@ -166,16 +166,27 @@ engrams are private/NIP-44-encrypted; Crucible claims are intentionally
 public), tested to confirm private and public entries are never flattened
 into one undifferentiated list even when both exist.
 
-**Phase 4 — core deliverable done, full BPO pilot still needs Vantage-side
-wiring.** GenOffice's README documents only Electron desktop apps, no
-headless service — looked like a blocker until the actual package source
-was checked: the underlying engine packages are Electron-free and usable
-headlessly, just not published to npm standalone. Built and live-verified
-`de_package_docx` — parses a real docx, generates new paragraphs via
-GenOffice's real API, produces structurally-valid output with exact
-requested content confirmed present. What's not done: wiring this to an
-actual Vantage broadcast-intent trigger (depends on Vantage's own adapter,
-which is `planned`, not built).
+**Phase 4 — both skills done and live-verified; only the Vantage trigger
+wiring is outstanding.** GenOffice's README documents only Electron
+desktop apps, no headless service — looked like a blocker until the
+actual package source was checked: the underlying engine packages are
+Electron-free and usable headlessly, just not published to npm
+standalone. `de_package_docx` (4.1's document-worker capability) parses a
+real docx, generates new paragraphs via GenOffice's real API, produces
+structurally-valid output with exact requested content confirmed present.
+`de_deliver_client_artifact` (4.2's BPO pilot deliverable half) wraps it
+with a real, live-verified delivery-receipt engram under
+`mem/skills/de_deliver/<client>/*` — generation and publish both
+independently confirmed, including a separate readback proving the exact
+recorded content. What's not done: wiring either skill to an actual
+Vantage broadcast-intent trigger. That trigger's schema is explicitly
+**not yet defined** (confirmed directly to wD, who is building the
+Vantage-side adapter) — "broadcast-intent" was aspirational language in
+the original plan-v3 success criteria, not a concrete contract; the real,
+concrete contract that exists today is each skill's own JSON Schema
+`inputs` in its `SKILL.md`. Whether Vantage invokes these synchronously or
+via an engram-triggered async path is an open joint decision, not yet
+made.
 
 **Open items not resolved by anyone yet**: gtm_ credential rotation
 (investigated — worse than described, live in `ps auxww` right now, but
