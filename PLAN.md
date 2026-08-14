@@ -118,12 +118,26 @@ gap (wrong pyproject extras group). One open blocker: `HermesAdapter`
 only speaks OpenAgents' hosted SaaS join API, not the self-hosted
 network's native protocol — needs a decision, documented with three
 options, not yet chosen.
-2.2: NIP-42 auth implemented and live-proven against the real production
-Buzz relay. This incidentally proved Crucible's own docs wrong — kinds
-47001-47007 are rejected by the deployed relay ("restricted: unknown
-event kind"), confirmed both from source and live, post-authentication.
-The OpenAgents→Buzz message-mirroring bridge agent itself (an SDK-connected
-client, not a REST poller) is the scoped, not-yet-built next increment.
+2.2: DONE — NIP-42 auth implemented and live-proven against the real
+production Buzz relay. This incidentally proved Crucible's own docs
+wrong — kinds 47001-47007 are rejected by the deployed relay ("restricted:
+unknown event kind"), confirmed both from source and live,
+post-authentication. The OpenAgents↔Buzz bridge agent itself
+(`ga_bridge.py`, a genuine SDK-connected local-network agent, not a REST
+poller) was subsequently built, deployed, and live-proven end to end: a
+real channel message posted in the local OpenAgents network was mirrored
+to a real, authenticated engram on the production Buzz relay and read
+back with exact content intact. Getting there required real debugging
+against undocumented/inconsistently-documented SDK behavior (full account
+in `docs/D_2_2_GA_BRIDGE.md`) — most notably that `agent.start()` doesn't
+block and silently drops the message-polling task unless
+`agent.wait_for_stop()` is called after it, and that the relay does
+Host-header virtual routing requiring a pre-connected-socket workaround
+(`minipae._open_presocket`, `connect_url=` on the authenticated
+publish/query functions). Not yet done: running it as a supervised
+long-lived production process (it was run under a test harness for the
+proof, then stopped) — needs a systemd unit or equivalent, not set up as
+part of this deliverable.
 2.3: Commonly CAP webhook driver proven live by a different pane, survived
 and recovered from a real MongoDB ransomware incident (caught by the
 orchestrator, root-caused, hardened, re-verified clean).
