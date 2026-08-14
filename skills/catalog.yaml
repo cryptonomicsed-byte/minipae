@@ -57,3 +57,8 @@ skills:
     verb: de_verify
     runtimes: [hermes]
     status: active
+  - id: de_package_docx
+    file: skills/de_package_docx/SKILL.md
+    verb: de_package
+    runtimes: [hermes]
+    status: active
