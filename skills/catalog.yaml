@@ -62,3 +62,8 @@ skills:
     verb: de_package
     runtimes: [hermes]
     status: active
+  - id: de_deliver_client_artifact
+    file: skills/de_deliver_client_artifact/SKILL.md
+    verb: de_deliver
+    runtimes: [hermes]
+    status: active
