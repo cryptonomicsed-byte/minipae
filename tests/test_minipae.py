@@ -268,6 +268,31 @@ class TestParseOkMessage(unittest.TestCase):
         self.assertEqual(m._parse_ok_message(msg), {"ok": True, "message": ""})
 
 
+class TestNip42Auth(unittest.TestCase):
+    def test_build_auth_event_shape(self):
+        sk = m.secrets.token_bytes(32)
+        ev = m.build_auth_event("challenge-123", "wss://relay.example", sk)
+        self.assertEqual(ev["kind"], m.KIND_AUTH)
+        self.assertEqual(ev["kind"], 22242)
+        self.assertEqual(ev["content"], "")
+        self.assertIn(["relay", "wss://relay.example"], ev["tags"])
+        self.assertIn(["challenge", "challenge-123"], ev["tags"])
+        pk = m.pubkey_from_secret(int.from_bytes(sk, "big"))
+        self.assertEqual(ev["pubkey"], pk.hex())
+        self.assertTrue(m.schnorr_verify(bytes.fromhex(ev["id"]), pk, bytes.fromhex(ev["sig"])))
+
+    def test_build_auth_event_id_matches_content(self):
+        sk = m.secrets.token_bytes(32)
+        ev = m.build_auth_event("c1", "wss://r", sk)
+        self.assertEqual(ev["id"], m.event_id(ev))
+
+    def test_different_challenge_different_id(self):
+        sk = m.secrets.token_bytes(32)
+        ev1 = m.build_auth_event("c1", "wss://r", sk)
+        ev2 = m.build_auth_event("c2", "wss://r", sk)
+        self.assertNotEqual(ev1["id"], ev2["id"])
+
+
 class TestCapBridge(unittest.TestCase):
     def test_deterministic(self):
         sk = m.secrets.token_bytes(32)

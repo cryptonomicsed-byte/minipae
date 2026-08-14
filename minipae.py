@@ -418,6 +418,58 @@ async def publish(relay: str, event: dict) -> dict:
                 return _parse_ok_message(msg)
 
 
+# --------------------------------------------------------------------------
+# NIP-42 relay authentication (kind:22242)
+# --------------------------------------------------------------------------
+KIND_AUTH = 22242
+
+
+def build_auth_event(challenge: str, relay_url: str, seckey: bytes) -> dict:
+    """Build+sign a NIP-42 kind:22242 AUTH response event."""
+    pubkey = pubkey_from_secret(int.from_bytes(seckey, "big"))
+    ev = {
+        "kind": KIND_AUTH,
+        "pubkey": pubkey.hex(),
+        "created_at": int(time.time()),
+        "tags": [["relay", relay_url], ["challenge", challenge]],
+        "content": "",
+    }
+    ev["id"] = event_id(ev)
+    ev["sig"] = schnorr_sign(bytes.fromhex(ev["id"]), int.from_bytes(seckey, "big"),
+                             secrets.token_bytes(32)).hex()
+    return ev
+
+
+async def publish_authenticated(relay: str, event: dict, seckey: bytes) -> dict:
+    """Publish an event, transparently handling a NIP-42 AUTH challenge —
+    from either the relay (proactive AUTH on connect, observed live on
+    buzz-prod-relay-1) or a rejected EVENT ("auth-required: ..."), per
+    docs/D3_NIP98_ENVELOPE_DECISION.md's NIP-42-for-relay-websockets
+    decision. Resends the original event once AUTH succeeds; returns that
+    event's own OK result (not the AUTH event's)."""
+    import websockets
+    async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024) as ws:
+        await ws.send(json.dumps(["EVENT", event]))
+        event_resent = False
+        while True:
+            msg = json.loads(await asyncio_wait(ws))
+            if msg[0] == "AUTH":
+                auth_ev = build_auth_event(msg[1], relay, seckey)
+                await ws.send(json.dumps(["AUTH", auth_ev]))
+            elif msg[0] == "OK":
+                ok_id, result = msg[1], _parse_ok_message(msg)
+                if ok_id == event["id"]:
+                    if not result["ok"] and "auth-required" in result["message"] and not event_resent:
+                        # rejected pre-auth; wait for the AUTH event's own OK
+                        # (handled below) before resending.
+                        continue
+                    return result
+                # an OK for a different id — must be our AUTH event's result.
+                if result["ok"] and not event_resent:
+                    event_resent = True
+                    await ws.send(json.dumps(["EVENT", event]))
+
+
 async def query(relay: str, authors: list[str], since: int | None = None) -> list[dict]:
     import websockets
     events = []
@@ -433,6 +485,61 @@ async def query(relay: str, authors: list[str], since: int | None = None) -> lis
             elif msg[0] == "EOSE":
                 await ws.send(json.dumps(["CLOSE", "minipae"]))
                 break
+    return events
+
+
+async def query_authenticated(relay: str, authors: list[str], seckey: bytes,
+                              kinds: list[int] | None = None, since: int | None = None) -> list[dict]:
+    """Like query(), but handles a NIP-42 AUTH challenge first — some relays
+    (buzz-prod-relay-1 observed live) close unauthenticated REQ subscriptions
+    outright rather than returning empty results, so a plain query() looks
+    like a connection error rather than "no events"."""
+    import asyncio
+    import websockets
+    events = []
+    filt = {"kinds": kinds or [KIND_AGENT_ENGRAM], "authors": authors, "limit": 500}
+    if since is not None:
+        filt["since"] = since
+    async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024) as ws:
+        req_sent = False
+
+        async def send_req():
+            await ws.send(json.dumps(["REQ", "minipae", filt]))
+
+        # some relays challenge before any client message; give them one
+        # message-turn to do so before we send REQ ourselves.
+        try:
+            first = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+            if first[0] == "AUTH":
+                auth_ev = build_auth_event(first[1], relay, seckey)
+                await ws.send(json.dumps(["AUTH", auth_ev]))
+            else:
+                # not an AUTH challenge — treat as a normal reply to a REQ
+                # we haven't sent yet; send REQ now and requeue this frame
+                await send_req()
+                req_sent = True
+                if first[0] == "EVENT":
+                    events.append(first[2])
+                elif first[0] == "EOSE":
+                    await ws.send(json.dumps(["CLOSE", "minipae"]))
+                    return events
+        except asyncio.TimeoutError:
+            pass
+
+        if not req_sent:
+            await send_req()
+
+        while True:
+            msg = json.loads(await asyncio_wait(ws))
+            if msg[0] == "EVENT":
+                events.append(msg[2])
+            elif msg[0] == "EOSE":
+                await ws.send(json.dumps(["CLOSE", "minipae"]))
+                break
+            elif msg[0] == "OK":
+                # our AUTH event's result; on success (re)send REQ
+                if _parse_ok_message(msg)["ok"]:
+                    await send_req()
     return events
 
 
