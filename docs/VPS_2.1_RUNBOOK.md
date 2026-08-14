@@ -19,48 +19,73 @@ Because the Hermes adapter is already builtin, 2.1's remaining work is
 **deployment + registration**, not code — matches "you prepare
 config/agent workspace; Hermes deploys" from the task brief.
 
+## [UPDATE] Deploy blocker found + fixed: gRPC transport missing grpcio
+
+Confirmed root cause against real source, not guessed: `pyproject.toml`
+declares `grpcio>=1.50.0` / `grpcio-tools>=1.50.0` under
+`[project.optional-dependencies].sdk`, **not** the base `dependencies`
+list. The `Dockerfile` runs `pip install --no-cache-dir -e .` with no
+extras specifier — that installs only the base group. `docker-entrypoint.sh`
+starts `openagents network start /network`, which requires the gRPC
+transport on port 8600; with no grpcio installed, that transport has
+nothing to import and the network fails to start. This matches exactly
+what the orchestrator observed on the VPS.
+
+**Fix**: `docs/VPS_2.1_grpcio.patch` — one-line change,
+`pip install --no-cache-dir -e .` → `pip install --no-cache-dir -e ".[sdk]"`.
+Apply before building:
+
+```bash
+git clone https://github.com/openagents-org/openagents.git /opt/openagents
+cd /opt/openagents
+patch -p1 < /path/to/minipae/docs/VPS_2.1_grpcio.patch
+docker compose build   # rebuild with the extras group included
+```
+
+I have not built or run this on the VPS — verified the root cause against
+`pyproject.toml`/`Dockerfile` source only. Confirm the build actually
+succeeds and the gRPC transport binds before treating this as closed.
+
 ## Deploy (VPS: root@2.25.70.156, docker already present per 1.4's VPS profile)
 
 ```bash
 git clone https://github.com/openagents-org/openagents.git /opt/openagents
 cd /opt/openagents
-docker compose up -d
+patch -p1 < docs_from_minipae/VPS_2.1_grpcio.patch   # see above — required
+docker compose up -d --build
 curl -f http://localhost:8700/api/health   # wait for healthy before continuing
 ```
 
-No changes needed to the upstream `docker-compose.yml` for a first deploy —
-it has no required env vars (the `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` lines
-are commented-out optional extras for LLM-direct agent types, irrelevant to
-a Hermes-CLI-driven agent, which shells out to the already-installed
-`hermes` binary rather than calling a model API directly).
+No other changes needed to the upstream `docker-compose.yml` for a first
+deploy — it has no other required env vars (the `OPENAI_API_KEY`/
+`ANTHROPIC_API_KEY` lines are commented-out optional extras for LLM-direct
+agent types, irrelevant to a Hermes-CLI-driven agent, which shells out to
+the already-installed `hermes` binary rather than calling a model API
+directly).
+
+**deepseek provider key** (per orchestrator decision, VPS-local hermes):
+read from the vault as a 0600 file inside the container/session, same
+constraint as every other key in this plan — never argv, never a bare env
+var set from a shell history-visible command, never on VPS host disk
+outside the intended 0600 location.
 
 ## Register a workspace + hermes-type agent
 
-The registry entry (`hermes.yaml`) requires the `hermes` binary to be
-reachable inside wherever `HermesAdapter` spawns processes. Two shapes,
-pick based on where the OpenAgents container can actually reach a working
-`hermes` install:
-
-- **VPS-local Hermes**: if a `hermes` CLI is (or will be) installed inside
-  the OpenAgents container/host directly, register the agent there — see
-  registry install block (`scripts/install.sh` from NousResearch/hermes-agent).
-- **Fold 4 / Mac via herdr bridge**: per plan-v3 (2.1: "hermes agents (Fold 4
-  + Mac via herdr bridge wK)"), the intent is for OpenAgents on the VPS to
-  dispatch to the *existing* Hermes sessions already running on Fold 4/Mac,
-  not spin up new local ones. I don't have herdr's bridge-endpoint contract
-  in this repo/session — that's orchestrator-side tooling. This half of 2.1
-  (wiring the herdr bridge into an OpenAgents agent registration) needs
-  Hermes to specify the bridge endpoint/protocol; I can't fabricate it
-  without risking a config that looks plausible but doesn't actually route
-  anywhere real.
+**[RESOLVED by orchestrator]**: register **VPS-local** for now — a
+`hermes` CLI installed inside/next to the OpenAgents container/host, per
+the registry install block (`scripts/install.sh` from
+NousResearch/hermes-agent). The Fold 4/Mac herdr bridge is explicitly
+deferred to a Phase-3 refinement (needs a VPS←Mac reverse tunnel) and is
+NOT 2.1-blocking — so 2.1 no longer has an open dependency on herdr's
+bridge contract.
 
 Once a `hermes` binary is reachable, workspace + agent registration is
 via OpenAgents' own Studio UI (`:8700/studio`) or its HTTP API — no minipae
 code involved at this stage; NIP-AE bridging is 2.2, not 2.1.
 
-## Open item for Hermes
+## Remaining open item
 
-Confirm which shape (VPS-local vs herdr-bridge-to-existing-session) 2.1
-should actually register, and if herdr-bridge, hand me the bridge
-endpoint/protocol so I can write the actual agent registration config
-rather than leaving it as a placeholder.
+None for 2.1 itself now that VPS-local is decided and the grpcio blocker
+has a confirmed fix. Execution (build + deploy + register) is Hermes's
+step, with the explicit approval gate the orchestrator specified for the
+Dockerfile change.

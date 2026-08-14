@@ -1,0 +1,13 @@
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -22,7 +22,10 @@
+ COPY sdk/src/ ./sdk/src/
+
+ # Install Python dependencies
+-RUN pip install --no-cache-dir -e .
++# NOTE (minipae panel, 2.1 VPS deploy fix): grpcio/grpcio-tools are declared
++# under [project.optional-dependencies].sdk in pyproject.toml, not the base
++# `dependencies` list — `pip install -e .` alone never installs them, so the
++# gRPC transport (port 8600, required by docker-entrypoint.sh) has nothing
++# to import and the network fails to start. Install the sdk extra explicitly.
++RUN pip install --no-cache-dir -e ".[sdk]"
