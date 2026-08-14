@@ -86,24 +86,34 @@ install (2.3's proof: installation `6a7e54405f61add99795c87f` for pod
 are public identifiers already, not secrets — storing it doesn't add a
 new key-management burden the way a second random secret would have.
 
-## Status: designed, NOT executed
+## Status: derivation done; hardening confirmed live; install-time wiring is wC's execution lane
 
-I have **not** registered anything against a live Commonly instance and am
-not going to right now. Per the orchestrator's note, 2.3's proof data was
-destroyed by a MongoDB ransomware wipe and re-proving/hardening is
-pending on wC's lane — registering a new CAP install against that same
-infrastructure before it's hardened would be adding load to a compromised
-system mid-incident, not validating anything durable. `derive_cap_webhook_secret`
-above is a pure function with no network/install side effects — safe to
-land now; the actual install-time wiring should wait for wC's
-hardening pass to close out.
+**[UPDATE]** wC's hardening (`3f2f97f`) landed and I independently confirmed
+it live on `contabo-vps` (89.117.74.224, separate host from minipae's own
+VPS): `mongodb` has no published port at all (internal-only on
+`app-network`), `backend` binds `127.0.0.1:5000` only, `webhook-agent` has
+no `ports:` mapping — matches the README's hardening writeup exactly, not
+just claimed. The blocker that held this back is resolved.
 
-## Open question worth surfacing separately (not blocking 2.4)
+**Not going to register a new CAP install myself, though** — Commonly
+execution is explicitly wC's lane (per this task's own boundary: "do NOT
+touch Commonly code — your lane is the Buzz/identity side"), and I already
+did the Buzz-side half (`derive_cap_webhook_secret`, tested, in
+`cap_bridge.py`). The remaining wiring — calling
+`POST /api/registry/install` with a secret produced by that function
+instead of a random one — is Commonly-side execution, ready for wC to
+pick up whenever convenient. Nothing on my side is blocking it anymore.
 
-The ransomware wipe is a real security incident on shared infrastructure.
-I don't have visibility into which VPS/host it hit or whether it's
-isolated from the VPS minipae's own material lives on (2.25.70.156,
-gtstate volume). Worth an explicit confirmation from wC/Hermes that
-the compromised MongoDB instance is genuinely isolated from minipae's
-key material and the GenTeam daemon container, not just assumed to be —
+## Resolved: infrastructure isolation
+
+Confirmed directly (not assumed) — the previously-compromised Mongo
+instance lives on `contabo-vps` (89.117.74.224), a **completely different
+host** from `2.25.70.156` where minipae's own key material (gtstate
+volume) and the GenTeam daemon container live. No shared blast radius.
+
+Unrelated observation from the same check, noted for the record only: a
+pre-existing `hermes-agent-contabo-hermes-agent-1` container (5-day
+uptime, predates this session's work) is also running on that box,
+alongside an `ourschool-postgres` container — neither touched, both
+outside this task's scope.
 same root-cause-before-move-on instinct as everything else this session.
