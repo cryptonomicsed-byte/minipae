@@ -76,6 +76,24 @@ architectural fact for whoever owns the Crucible↔relay integration
 decision, since Crucible's own docs currently assert something the code
 doesn't do.
 
+## 2.2 scope status
+
+The hard, load-bearing part of 2.2 — a working, live-proven NIP-42 auth
+layer that lets minipae write/read authenticated events on the real Buzz
+relay — is done and verified (see the commit alongside this doc).
+
+**Not yet built**: the actual OpenAgents→Buzz message-mirroring bridge
+agent. Checked `sdk/src/openagents/mods/workspace/messaging/adapter.py`
+directly — it's a client-side adapter for OpenAgents' own SDK connection
+protocol (the same gRPC-based agent-client mechanism `charlie.yaml`-style
+local agents use), not a plain REST API a script can poll from outside.
+Building this properly means writing a real OpenAgents SDK-connected
+agent (using its `AgentClient`/mod-message system to subscribe to
+channel messages) that then calls `publish_authenticated()` for each one
+— a genuine, separately-scoped increment, not a quick addition on top of
+what's here. Flagging as the precise next step rather than rushing an
+untested implementation.
+
 ## Bonus finding along the way
 
 Building this also caught a real, unrelated correctness bug in
