@@ -134,10 +134,13 @@ block and silently drops the message-polling task unless
 `agent.wait_for_stop()` is called after it, and that the relay does
 Host-header virtual routing requiring a pre-connected-socket workaround
 (`minipae._open_presocket`, `connect_url=` on the authenticated
-publish/query functions). Not yet done: running it as a supervised
-long-lived production process (it was run under a test harness for the
-proof, then stopped) — needs a systemd unit or equivalent, not set up as
-part of this deliverable.
+publish/query functions). Now running as a supervised long-lived service
+(docker-compose, `restart: unless-stopped`, reusing the existing image),
+re-verified end to end through the supervised instance — see
+`docs/D_2_2_GA_BRIDGE.md` for three more deployment-level bugs found and
+fixed getting there (inherited ENTRYPOINT swallowing the command,
+inherited HEALTHCHECK always failing, agent-id collision on ungraceful
+restart).
 2.3: Commonly CAP webhook driver proven live by a different pane, survived
 and recovered from a real MongoDB ransomware incident (caught by the
 orchestrator, root-caused, hardened, re-verified clean).
