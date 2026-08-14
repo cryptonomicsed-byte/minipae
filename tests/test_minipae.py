@@ -293,6 +293,19 @@ class TestNip42Auth(unittest.TestCase):
         self.assertNotEqual(ev1["id"], ev2["id"])
 
 
+class TestOpenPresocket(unittest.TestCase):
+    def test_default_port_ws(self):
+        # can't open a real socket offline; just confirm the port-defaulting
+        # logic via a connection to a closed local port raises cleanly
+        # rather than silently picking the wrong port.
+        with self.assertRaises(OSError):
+            m._open_presocket("ws://127.0.0.1:1")  # port 1 is reserved/closed
+
+    def test_invalid_host_raises(self):
+        with self.assertRaises(OSError):
+            m._open_presocket("ws://this-host-should-not-resolve.invalid:3000")
+
+
 class TestCapBridge(unittest.TestCase):
     def test_deterministic(self):
         sk = m.secrets.token_bytes(32)

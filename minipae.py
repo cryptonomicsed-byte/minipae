@@ -440,15 +440,47 @@ def build_auth_event(challenge: str, relay_url: str, seckey: bytes) -> dict:
     return ev
 
 
-async def publish_authenticated(relay: str, event: dict, seckey: bytes) -> dict:
+def _open_presocket(connect_url: str):
+    """Open a real, connected, non-blocking TCP socket to connect_url's
+    host:port, for use as websockets.connect's `sock=` override."""
+    import socket
+    from urllib.parse import urlparse
+    parsed = urlparse(connect_url)
+    port = parsed.port or (443 if parsed.scheme in ("wss", "https") else 80)
+    s = socket.create_connection((parsed.hostname, port), timeout=15)
+    s.setblocking(False)
+    return s
+
+
+async def publish_authenticated(relay: str, event: dict, seckey: bytes,
+                                connect_url: str | None = None) -> dict:
     """Publish an event, transparently handling a NIP-42 AUTH challenge —
     from either the relay (proactive AUTH on connect, observed live on
     buzz-prod-relay-1) or a rejected EVENT ("auth-required: ..."), per
     docs/D3_NIP98_ENVELOPE_DECISION.md's NIP-42-for-relay-websockets
     decision. Resends the original event once AUTH succeeds; returns that
-    event's own OK result (not the AUTH event's)."""
+    event's own OK result (not the AUTH event's).
+
+    connect_url: actual address to open the TCP connection to, if different
+    from `relay`'s own logical identity (e.g. reaching a relay by a Docker
+    container's internal DNS name/IP while the relay only recognizes a
+    specific Host header for its virtual-hosted identity — observed live
+    against buzz-prod-relay-1, whose NIP-11 self-identity is
+    "wss://localhost:3000" regardless of which address actually reaches
+    it, and which silently overwrites any Host override passed via
+    `additional_headers` since the websockets library always recomputes
+    Host from the connection URI). When given, a real TCP socket is opened
+    to `connect_url` first and handed to websockets.connect via `sock=`,
+    so the URI (`relay`) — not the socket's real destination — determines
+    the Host header and path, while the NIP-42 AUTH event's `relay` tag
+    still names `relay`'s logical identity too. Both must match what the
+    relay itself expects, independent of how the connection is routed.
+    """
     import websockets
-    async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024) as ws:
+    presock = _open_presocket(connect_url) if connect_url else None
+    connect_kwargs = {"sock": presock} if presock else {}
+    async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024,
+                                  **connect_kwargs) as ws:
         await ws.send(json.dumps(["EVENT", event]))
         event_resent = False
         while True:
@@ -489,18 +521,25 @@ async def query(relay: str, authors: list[str], since: int | None = None) -> lis
 
 
 async def query_authenticated(relay: str, authors: list[str], seckey: bytes,
-                              kinds: list[int] | None = None, since: int | None = None) -> list[dict]:
+                              kinds: list[int] | None = None, since: int | None = None,
+                              connect_url: str | None = None) -> list[dict]:
     """Like query(), but handles a NIP-42 AUTH challenge first — some relays
     (buzz-prod-relay-1 observed live) close unauthenticated REQ subscriptions
     outright rather than returning empty results, so a plain query() looks
-    like a connection error rather than "no events"."""
+    like a connection error rather than "no events".
+
+    connect_url: see publish_authenticated's docstring — same Host-header
+    virtual-routing workaround via a pre-connected socket."""
     import asyncio
     import websockets
     events = []
     filt = {"kinds": kinds or [KIND_AGENT_ENGRAM], "authors": authors, "limit": 500}
     if since is not None:
         filt["since"] = since
-    async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024) as ws:
+    presock = _open_presocket(connect_url) if connect_url else None
+    connect_kwargs = {"sock": presock} if presock else {}
+    async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024,
+                                  **connect_kwargs) as ws:
         req_sent = False
 
         async def send_req():
