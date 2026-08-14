@@ -400,6 +400,14 @@ def event_id(ev: dict) -> str:
 # --------------------------------------------------------------------------
 # relay client
 # --------------------------------------------------------------------------
+def _parse_ok_message(msg: list) -> dict:
+    """Parse a NIP-01 relay OK frame: ["OK", <event_id>, <accepted:bool>, <message>].
+    msg[1] is the event id (always a truthy string — never a valid stand-in
+    for the accepted flag); msg[2] is the real accepted flag, msg[3] the
+    human-readable message."""
+    return {"ok": bool(msg[2]), "message": msg[3] if len(msg) > 3 else ""}
+
+
 async def publish(relay: str, event: dict) -> dict:
     import websockets
     async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024) as ws:
@@ -407,7 +415,7 @@ async def publish(relay: str, event: dict) -> dict:
         while True:
             msg = json.loads(await asyncio_wait(ws))
             if msg[0] == "OK":
-                return {"ok": bool(msg[1]), "message": msg[2] if len(msg) > 2 else ""}
+                return _parse_ok_message(msg)
 
 
 async def query(relay: str, authors: list[str], since: int | None = None) -> list[dict]:

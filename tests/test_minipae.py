@@ -246,6 +246,28 @@ class TestLocalSyncCache(unittest.TestCase):
         self.assertEqual(m.load_cache("nonexistent", "nonexistent"), {})
 
 
+class TestParseOkMessage(unittest.TestCase):
+    def test_accepted(self):
+        # captured live from a real relay (buzz-prod-relay-1) during 2.2 recon
+        msg = ["OK", "0c5f74a1c65d82e060063c381a52eba990bcc5e52868e819dc25591da5e3f5f7",
+               True, ""]
+        self.assertEqual(m._parse_ok_message(msg), {"ok": True, "message": ""})
+
+    def test_rejected_regression(self):
+        # the exact live rejection frame that caught the msg[1]/msg[2] off-by-one:
+        # publish() previously read msg[1] (the event id — always a truthy
+        # string) as the accepted flag, so this real rejection was reported
+        # as ok=True.
+        msg = ["OK", "0c5f74a1c65d82e060063c381a52eba990bcc5e52868e819dc25591da5e3f5f7",
+               False, "auth-required: not authenticated"]
+        result = m._parse_ok_message(msg)
+        self.assertEqual(result, {"ok": False, "message": "auth-required: not authenticated"})
+
+    def test_missing_message_field(self):
+        msg = ["OK", "abc123", True]
+        self.assertEqual(m._parse_ok_message(msg), {"ok": True, "message": ""})
+
+
 class TestCapBridge(unittest.TestCase):
     def test_deterministic(self):
         sk = m.secrets.token_bytes(32)
