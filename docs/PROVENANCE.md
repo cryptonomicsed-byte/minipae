@@ -75,3 +75,55 @@ don't inflate witness counts.
 - Never fabricate `created_by`; if the runtime does not have a stable agent
   pubkey, omit `created_by` and set `witness_note` accordingly (missing
   `created_by` means the engram cannot contribute to n_eff).
+
+## Addendum: `content_trust_class` for the Phase 3 merged read view (3.3)
+
+Added per the orchestrator's endorsement of the confidentiality-model
+mismatch flagged in `docs/D3_NIP98_ENVELOPE_DECISION.md`: minipae engrams
+are NIP-44-encrypted (owner-only decryptable) by protocol; Crucible claims
+(kinds 47001-47007, see that repo's `crates/crucible-core/src/claim.rs`)
+are intentionally plaintext NIP-01 events, visible to the whole Buzz
+community, because falsifiability requires public checkability. These are
+opposite confidentiality models sitting under one merged view — the view
+must label which class each entry belongs to, never present them
+uniformly.
+
+New OPTIONAL body field, backward-compatible with `nip-ae-provenance/v1`
+(NIP-AE's own permissive-body-fields rule means old readers ignore it
+safely — no schema version bump needed):
+
+```jsonc
+"provenance": {
+  // ...existing v1 fields...
+  "content_trust_class": "private"   // "private" | "public"
+}
+```
+
+- `"private"` — the default for every minipae-native engram. The engram
+  itself is always NIP-44-encrypted regardless of this field (that's the
+  transport, not the content's origin visibility); `"private"` here means
+  the *underlying content* is also private — the common case (Hermes
+  memory, daemon state, anything an adapter wrote directly from its own
+  runtime's data).
+- `"public"` — set ONLY on an engram that mirrors or points at content
+  whose origin is inherently public, e.g. a future adapter that projects
+  a Crucible claim/attestation's existence into `mem/buzz/*` for
+  discoverability. The engram wrapper is still NIP-44-encrypted (only the
+  owner can read the *pointer*), but the field records that the
+  underlying claim it references is public on the Buzz relay to anyone
+  admitted to that community — so a reader must not treat decrypting the
+  engram as equivalent to the content being confidential.
+- RECOMMENDED (not required) for any engram carrying `claim_refs` or a
+  `falsifier` block, since those are exactly the entries most likely to
+  reference Crucible-side public content.
+- Omitted = `"private"` by default. No existing adapter (1.2/1.3) needs to
+  change; this only matters once a Buzz-facing adapter (`mem/buzz/*`,
+  currently `planned` in `NAMESPACES.md`) exists.
+
+**3.3 obligation**: the merged read view MUST render `content_trust_class`
+per entry (e.g., a visible badge/tag in any UI, a field in any API
+response) and MUST NOT merge private and public entries into a single
+undifferentiated feed. This is a design constraint on 3.3's implementation,
+not just documentation — noting it here now, before 3.3 is built, so it
+isn't retrofitted after a merged view already ships without the
+distinction.
