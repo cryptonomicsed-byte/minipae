@@ -76,25 +76,110 @@ confirmed in logs, not routed around).
    upload directive...`) is Commonly's own agent-message post-processing —
    real behavior of the live system, not something this driver added.
 
+## Incident: MongoDB ransomware bot, and the hardening that followed
+
+The first deployment of this proof (commit `ea55f87`) published
+`mongo`'s port `27017` and `backend`'s port `5000` to `0.0.0.0` on the VPS
+via `docker-compose.yml`'s `ports:` mappings — which bypass UFW entirely
+(Docker writes its own iptables `DOCKER` chain rules ahead of UFW's, a
+well-known Docker+UFW interaction, not a UFW misconfiguration). Mongo had
+no auth configured. Within roughly an hour of the first proof run, an
+internet-scanning ransomware bot found the open, unauthenticated Mongo
+port, wiped the `commonly` database, and dropped a `READ_ME_TO_RECOVER_YOUR_DATA`
+extortion note. Independently caught and reported by the orchestrator
+during verification, not by this pane. **No ransom was paid; the wiped
+data was throwaway proof data with no value, and the deployment was
+rebuilt clean.**
+
+What actually happened, precisely:
+- `mongo`'s `27017:27017` and `backend`'s `5000:5000` port mappings in
+  `docker-compose.yml` published both to every interface, and — critically
+  — Docker's own iptables rules for published ports are inserted ahead of
+  UFW's chain, so UFW's default-deny policy never saw that traffic. The
+  bridge-subnet-scoped UFW rule added earlier for the (host-run) webhook
+  driver's port 8420 was real and correctly scoped, but irrelevant to this
+  exposure — it protected a different, unpublished port; the compromise
+  came through Docker's own port publishing, which UFW cannot see.
+- Mongo ran with no `MONGO_INITDB_ROOT_USERNAME`/`PASSWORD` — anyone who
+  could reach the port had full read/write/drop access.
+- The backend's dev-convenience login (`dev@commonly.local` /
+  `password123`, from Commonly's own `.env.example`, intended for local-only
+  use) was also reachable from the public internet.
+
+Fix applied (re-verified live, see the "Live evidence" section above for
+the timestamps and re-run):
+1. **Removed the `mongo` and `postgres` port publishes entirely** — both
+   only ever needed to be reachable from `backend` over the internal
+   `app-network`, which Docker Compose already provides without any
+   `ports:` mapping.
+2. **Added real Mongo auth** — `MONGO_INITDB_ROOT_USERNAME`/`PASSWORD` set
+   to a random 24-byte hex value, `MONGO_URI` updated to
+   `mongodb://commonly:<random>@mongo:27017/commonly?authSource=admin`.
+   Confirmed enforced: `mongosh` without credentials now gets
+   `MongoServerError: Command listDatabases requires authentication`.
+3. **Bound `backend`'s port to `127.0.0.1:5000` instead of `0.0.0.0:5000`**
+   — reachable from the VPS itself (and from containers via the bridge
+   gateway, if ever needed) but not from the public internet.
+4. **Rotated `JWT_SECRET` and `LOCAL_DEV_LOGIN_PASSWORD`** to random
+   values. Along the way found a second real gap: `docker-compose.yml`'s
+   `backend` service didn't actually forward `LOCAL_DEV_LOGIN_*` (or most
+   of `.env`) into the container at all — only an explicit allowlist of
+   vars in the `environment:` block — so the first credential rotation
+   silently had no effect and the dev user kept the old password until
+   `env_file: .env` was added to actually load the full file.
+5. **Deleted the compromised Mongo volume** rather than trying to recover
+   it — it held nothing but throwaway proof data.
+6. **Moved the webhook driver off a host-bound port entirely** — it now
+   runs as its own container (`webhook-agent`) on the internal
+   `app-network` with no `ports:` mapping at all, reached by `backend` via
+   Docker's internal DNS (`http://webhook-agent:8420/commonly`) rather than
+   a host IP or `localhost`. This removes the earlier UFW-bridge-subnet
+   rule's reason to exist — deleted it (`ufw delete allow from
+   172.19.0.0/16 to any port 8420 proto tcp`) rather than leave an unused
+   rule around.
+
+Reproduction steps below already reflect the hardened setup — including
+the `MONGO_INITDB_ROOT_USERNAME`/`PASSWORD` env vars and the
+container-to-container webhook URL — not the original vulnerable one.
+
 ## Reproduction steps
 
 Requires: Docker + Docker Compose, Node 22, Python 3.
 
 ```bash
-# 1. Clone and stand up the minimal stack (mongo + postgres + backend only —
-#    no frontend needed for a pure CAP proof)
+# 1. Clone and stand up the minimal stack (mongo + postgres + backend +
+#    webhook-agent — no frontend needed for a pure CAP proof). Nothing here
+#    publishes a port to the internet: mongo/postgres/webhook-agent are
+#    internal-only on the compose network, backend binds 127.0.0.1 only.
 git clone https://github.com/Team-Commonly/commonly.git
 cd commonly
 cp .env.example backend/.env
-# set JWT_SECRET, and MONGO_URI to a value your mongo container resolves
-# (e.g. mongodb://mongo:27017/commonly for a no-auth compose mongo)
+
+# generate real random secrets — never ship the example file's defaults:
+MONGO_PW=$(openssl rand -hex 24)
+sed -i "s#^MONGO_URI=.*#MONGO_URI=mongodb://commonly:${MONGO_PW}@mongo:27017/commonly?authSource=admin#" backend/.env
+echo "MONGO_ROOT_USER=commonly" >> backend/.env
+echo "MONGO_ROOT_PASSWORD=${MONGO_PW}" >> backend/.env
+sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/" backend/.env
+sed -i "s/^LOCAL_DEV_LOGIN_PASSWORD=.*/LOCAL_DEV_LOGIN_PASSWORD=$(openssl rand -hex 16)/" backend/.env
 cp backend/.env .env
 
 # apply the postMessage fix (see agentEventService.postMessage-fix.patch)
 # — without it, step 5 below still verifies the signed event delivery but
 # the reply will not land in the pod.
 
-docker compose up -d mongo postgres
+# Edit docker-compose.yml (see the "Incident" section above for exact diffs):
+#  - mongo: drop `ports: ["27017:27017"]`, add MONGO_INITDB_ROOT_USERNAME/
+#    PASSWORD env pointing at MONGO_ROOT_USER/PASSWORD
+#  - postgres: drop `ports: ["5432:5432"]`
+#  - backend: change `ports: ["5000:5000"]` to `["127.0.0.1:5000:5000"]`,
+#    add `env_file: .env` (the explicit `environment:` allowlist does NOT
+#    forward LOCAL_DEV_LOGIN_* or most of .env otherwise)
+#  - add a `webhook-agent` service (python:3.12-slim, no ports:, bind-mount
+#    commonly/webhook_agent.py, same app-network) — see this repo's
+#    docker-compose.yml on the VPS for the exact block, or add your own
+
+docker compose up -d mongo postgres webhook-agent
 docker compose build backend
 # the backend image's dist/ gets shadowed by the docker-compose.yml bind
 # mount (./backend:/app) — build it directly on the host so it lands on
@@ -104,17 +189,12 @@ cd backend && npm install --include=dev && npx tsc -p tsconfig.build.json \
   && cp -r external dist/external 2>/dev/null; cd ..
 docker compose up -d backend
 
-# 2. Start the webhook driver (this directory)
-python3 commonly/webhook_agent.py 8420
-# if the backend runs in Docker and the driver runs on the host, either
-# run them on the same Docker network, or point webhookUrl at the Docker
-# bridge gateway IP (docker network inspect <net> --format
-# '{{range .IPAM.Config}}{{.Gateway}}{{end}}'), not localhost — and open
-# that port to the bridge subnet only if a host firewall is active.
-
-# 3. Log in, create a pod, install the webhook agent
+# 2. Log in (from the VPS/host itself — backend is 127.0.0.1-only), create
+#    a pod, install the webhook agent pointing at the container by its
+#    Docker Compose service name — no host port, no IP juggling needed:
+DEV_PW=$(grep '^LOCAL_DEV_LOGIN_PASSWORD=' .env | cut -d= -f2)
 TOKEN=$(curl -s -X POST localhost:5000/api/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"dev@commonly.local","password":"password123"}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+  -d "{\"email\":\"dev@commonly.local\",\"password\":\"$DEV_PW\"}" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
 
 POD_ID=$(curl -s -X POST localhost:5000/api/pods -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $TOKEN" \
@@ -128,16 +208,16 @@ curl -s -X POST localhost:5000/api/registry/install -H 'Content-Type: applicatio
     \"version\": \"1.0.0\",
     \"config\": { \"runtime\": {
       \"runtimeType\": \"webhook\",
-      \"webhookUrl\": \"http://<reachable-host>:8420/commonly\",
+      \"webhookUrl\": \"http://webhook-agent:8420/commonly\",
       \"webhookSecret\": \"bondhive-cap-proof-secret-2026\"
     }}
   }"
 
-# 4. Trigger a turn
+# 3. Trigger a turn
 curl -s -X POST localhost:5000/api/messages/$POD_ID -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $TOKEN" -d '{"content": "@bondhive-cap-proof prove it"}'
 
-# 5. Confirm the reply landed
+# 4. Confirm the reply landed
 curl -s localhost:5000/api/messages/$POD_ID -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
 ```
 
@@ -154,15 +234,22 @@ CLAUDE.md), or anything about the hosted `commonly.me` instance specifically
 the world becomes a Commonly agent" is supposed to guarantee regardless of
 which instance it's pointed at.
 
-## VPS state
+## VPS state (post-hardening, current)
 
 Left running for Hermes verification: `contabo-vps:/opt/commonly-cap-proof`
-— `docker compose ps` shows `mongodb` and `backend` up; `webhook_agent.py`
-running under `nohup` (PID logged to `webhook_agent.log` in that
-directory). Pod `6a7e53785f61add99795c85e` and installation
-`6a7e54405f61add99795c87f` are live and contain the full message transcript
-above. UFW rule `172.19.0.0/16 → 8420/tcp` is scoped to the Docker bridge
-subnet only.
+— `docker compose ps` shows `mongodb`, `postgres`, `backend`, and
+`webhook-agent` up. **No port from this deployment is published to the
+public internet**: `mongo` and `webhook-agent` have no `ports:` mapping at
+all (internal-only on `app-network`), `backend` is `127.0.0.1:5000` (host-
+local only), and the port-8420 UFW rule from the pre-hardening layout was
+deleted since the webhook driver no longer uses a host-bound port. Current
+live pod: `6a7e5fd78ec7c287b2d65394`, installation `6a7e5fd78ec7c287b2d653a4`
+— contains the post-hardening message transcript above. (The original pod
+`6a7e53785f61add99795c85e` / installation `6a7e54405f61add99795c87f` no
+longer exist — wiped along with everything else in the compromised
+pre-hardening Mongo volume, which was deleted rather than recovered.)
+Credentials (`MONGO_ROOT_PASSWORD`, `JWT_SECRET`, `LOCAL_DEV_LOGIN_PASSWORD`)
+are freshly rotated random values, not committed anywhere.
 
 **VPS-READY** — Hermes, this can be re-verified directly against the
 running instance (see reproduction steps above for the exact curl calls),
