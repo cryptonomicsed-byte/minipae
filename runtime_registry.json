@@ -1,0 +1,128 @@
+{
+  "schema": "runtime-registry/v1",
+  "entries": [
+    {
+      "runtime_id": "genteam-daemon",
+      "name": "GenTeam daemon",
+      "layer": "3-execute",
+      "kind": "daemon-container",
+      "status": "active",
+      "identity": {
+        "runtime_id_fields": ["machine_id"],
+        "nsec_path": "m/44'/30174'/<agent>'/<owner>'",
+        "agent_pubkey_ref": "core engram (per host)",
+        "notes": "one NIP-AE agent key crosses both hosts per docs/VPS_1.4_RUNBOOK.md Option A/B; the key is shared, machine_id is not"
+      },
+      "credentials": [
+        { "type": "gtm_", "ref": "GENTEAM_KEY env, sourced from GenTeam Computers page", "storage": "env at launch (VPS), tmux env (Fold 4)",
+          "rotation": "per GenTeam Computers page; NOT YET ROTATED", "last_rotated": null,
+          "advisory": "confirmed 2026-08-14: key is currently live in `ps auxww` on the VPS host (daemon binary only accepts --api-key via argv, no env/file alternative found). Rotation alone will not close this - see minipae session notes. Needs GenTeam dashboard access this session does not have." },
+        { "type": "nsec1", "ref": "<vault key>", "storage": "gtstate volume (uid-1001, 0600) on VPS; vault on Fold 4" }
+      ],
+      "hosts": [
+        {
+          "host_id": "vps-genteam",
+          "endpoint": "2.25.70.156",
+          "transport": "docker",
+          "health": "docker ps + log tail",
+          "machine_id": "aa87e64be48a61c7f69ac373380b04e198c3da367cd9484124222ef9c47d95da",
+          "verified_live": "2026-08-14: docker ps shows Up 30h; log tail shows 'Ready for GenTeam local agent turns'"
+        },
+        {
+          "host_id": "fold4-genteam",
+          "endpoint": "Fold 4 (tmux session 'genteam')",
+          "transport": "ssh/local",
+          "health": "~/.genteam/daemon.lock/owner.json (pid alive) + ~/genteam/daemon.log tail",
+          "machine_id": "be644354...",
+          "verified_live": "not independently re-verified this session (no Fold 4 access from here) - machine_id per ORCHESTRATION.md, not re-confirmed"
+        }
+      ],
+      "namespaces": ["mem/genteam/*"],
+      "provenance": { "source": "genteam-daemon", "source_version": "0.13.0" },
+      "adapter": "daemon_adapter.py",
+      "owner_pane": "wM/wC",
+      "registered_at": "2026-08-14T00:00:00Z",
+      "verified": { "health": true, "engram_roundtrip": true, "cross_relay": true, "last_check": "2026-08-14T00:00:00Z" }
+    },
+    {
+      "runtime_id": "hermes",
+      "name": "Hermes Agent",
+      "layer": "3-execute",
+      "kind": "cli-agent",
+      "status": "active",
+      "identity": {
+        "runtime_id_fields": ["profile_name"],
+        "nsec_path": "m/44'/30174'/<agent>'/<owner>'",
+        "agent_pubkey_ref": "core engram (per profile)",
+        "notes": "profile isolation: each profile is its own memory namespace scope"
+      },
+      "credentials": [
+        { "type": "nsec1", "ref": "<vault key>", "storage": "~/.hermes/credential_vault.json" }
+      ],
+      "hosts": [
+        { "host_id": "mac-hermes", "endpoint": "this Mac", "transport": "local", "health": "hermes --version" },
+        { "host_id": "fold4-hermes", "endpoint": "Fold 4", "transport": "local", "health": "not independently verified this session" },
+        { "host_id": "vps-hermes", "endpoint": "2.25.70.156, bind-mounted into openagents-network-studio container",
+          "transport": "docker (read-only bind mount)", "health": "docker exec openagents-network-studio hermes --version",
+          "verified_live": "2026-08-14: confirmed live - Hermes Agent v0.17.0 (2026.6.19), grpcio 1.83.0 co-installed; see docs/VPS_2.1_RUNBOOK.md" }
+      ],
+      "namespaces": ["mem/hermes/*"],
+      "provenance": { "source": "hermes", "source_version": "0.17.0" },
+      "adapter": "hermes_adapter.py",
+      "owner_pane": "wM (orchestrator = Hermes itself)",
+      "registered_at": "2026-08-14T00:00:00Z",
+      "verified": { "health": true, "engram_roundtrip": true, "last_check": "2026-08-13T00:00:00Z",
+        "notes": "15/15 entries verified live on wss://relay.primal.net (damus was HTTP 503 at verification time)" }
+    },
+    {
+      "runtime_id": "openclaw",
+      "name": "OpenClaw",
+      "layer": "3-execute",
+      "kind": "assistant-daemon",
+      "status": "planned",
+      "identity": {
+        "runtime_id_fields": ["agent_name", "gateway_endpoint"],
+        "nsec_path": "m/44'/30174'/<agent>'/<owner>' - NOT YET PROVISIONED",
+        "agent_pubkey_ref": null,
+        "notes": "G4 (docs/RUNTIME_REGISTRY.md): OpenClaw has its own sovereign Ed25519 (BIPON39-derived) identity, not yet reconciled with the NIP-AE derivation path. Undecided whether that Ed25519 key IS the agent key (map into derivation) or stays runtime-local (separate nsec1). Stays 'planned' until decided - matches the BIPON39/NIP-06 sibling-derivation pattern already proven on Omo-Koda2's kernel, but no one has done the OpenClaw-side equivalent yet."
+      },
+      "credentials": [
+        { "type": "bridge", "ref": "OPENCLAW_AGENT_KEY", "storage": "Vantage-Voice- env", "notes": "transport credential, not identity" }
+      ],
+      "hosts": [],
+      "namespaces": ["mem/openclaw/*"],
+      "provenance": { "source": "openclaw", "source_version": null },
+      "adapter": null,
+      "owner_pane": "unassigned",
+      "registered_at": null,
+      "verified": { "health": false, "engram_roundtrip": false, "last_check": null }
+    },
+    {
+      "runtime_id": "vantage",
+      "name": "Vantage",
+      "layer": "3-execute",
+      "kind": "api-platform",
+      "status": "planned",
+      "identity": {
+        "runtime_id_fields": ["agent_name"],
+        "nsec_path": "m/44'/30174'/<agent>'/<owner>' - NOT YET PROVISIONED",
+        "agent_pubkey_ref": null,
+        "notes": "Vantage's OWN Buzz integration (buzz_identity.py, buzz_bridge.py in /opt/ares/Vantage/backend and ~/vantage-instance2/backend) already gives agents a sealed-seed Nostr identity - separate from and not yet reconciled with minipae's NIP-AE derivation. G2: stays planned until a real minipae adapter exists; the Buzz identity alone does not satisfy the bus contract (engram namespace)."
+      },
+      "credentials": [
+        { "type": "api_key", "ref": "X-API-Key / MESH_KEY", "storage": "Vantage mesh config" }
+      ],
+      "hosts": [
+        { "host_id": "local", "endpoint": "http://localhost:8000", "transport": "REST", "health": "GET /health" },
+        { "host_id": "remote", "endpoint": "http://omokoda.duckdns.org:8001 (REST) / https://omokoda.duckdns.org/mcp (MCP)",
+          "transport": "REST + MCP", "health": "REST :8001 times out per prior notes; MCP endpoint reachable" }
+      ],
+      "namespaces": ["mem/vantage/*"],
+      "provenance": { "source": "vantage", "source_version": null },
+      "adapter": "buzz_bridge (planned)",
+      "owner_pane": "wD/w3",
+      "registered_at": null,
+      "verified": { "health": false, "engram_roundtrip": false, "last_check": null }
+    }
+  ]
+}

@@ -23,6 +23,7 @@ per the locked plan).
 | `mem/buzz/*`    | Buzz/Crucible native memory               | planned  |
 | `mem/ga/*`      | OpenAgents workspace state                | planned  |
 | `mem/commonly/*`| Commonly CAP pod state                    | planned  |
+| `mem/openclaw/*`| OpenClaw agent state/skills (Phase 3.1 G1) | planned  |
 
 ## Example slugs
 
@@ -30,6 +31,8 @@ per the locked plan).
 - `mem/genteam/computer/92dcbf5747d1/session/<session-id>`
 - `mem/hermes/profile/default/memory/<key>`
 - `mem/vantage/agent/<agent-id>/state`
+- `mem/openclaw/agent/<id>/state`
+- `mem/openclaw/agent/<id>/skills/<skill-id>`
 
 ## Reserved
 
