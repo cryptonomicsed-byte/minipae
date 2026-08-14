@@ -24,6 +24,7 @@ per the locked plan).
 | `mem/ga/*`      | OpenAgents workspace state                | planned  |
 | `mem/commonly/*`| Commonly CAP pod state                    | planned  |
 | `mem/openclaw/*`| OpenClaw agent state/skills (Phase 3.1 G1) | planned  |
+| `mem/skills/*`  | Shared skill catalog (Phase 3.2)          | planned  |
 
 ## Example slugs
 

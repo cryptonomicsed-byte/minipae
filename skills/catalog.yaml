@@ -1,0 +1,59 @@
+schema: skill-catalog/v1
+revision: 1
+verbs:
+  - verb: de_draft
+    description: produce a first-draft artifact from inputs (topic, audience, constraints)
+    inputs: object
+    outputs: [artifact, engram]
+    verification: required
+  - verb: de_review
+    description: critique an artifact; return structured findings (strengths, issues, verdict)
+    inputs: object
+    outputs: [findings, engram]
+    verification: required
+  - verb: de_deliver
+    description: package + deliver a final artifact; write a delivery receipt engram
+    inputs: object
+    outputs: [artifact, engram]
+    verification: required
+  - verb: de_verify
+    description: run the verification contract of another skill; report evidence (pass/fail + artifacts)
+    inputs: object
+    outputs: [evidence, engram]
+    verification: required
+  - verb: de_document
+    description: generate documentation from a codebase/session/artifact
+    inputs: object
+    outputs: [artifact, engram]
+    verification: required
+  - verb: de_summarize
+    description: structured summary of a source (transcript, thread, document)
+    inputs: object
+    outputs: [artifact, engram]
+    verification: required
+  - verb: de_transcribe
+    description: audio to text
+    inputs: object
+    outputs: [artifact, engram]
+    verification: required
+  - verb: de_research
+    description: gather + cite evidence for a question; emit claim_refs per PROVENANCE.md
+    inputs: object
+    outputs: [artifact, engram]
+    verification: required
+  - verb: de_plan
+    description: decompose a goal into steps with owners and checkpoints
+    inputs: object
+    outputs: [artifact, engram]
+    verification: required
+  - verb: de_package
+    description: assemble a deliverable bundle (e.g. .docx via GenOffice) from parts
+    inputs: object
+    outputs: [artifact, engram]
+    verification: required
+skills:
+  - id: de_verify_skill
+    file: skills/de_verify_skill/SKILL.md
+    verb: de_verify
+    runtimes: [hermes]
+    status: active
