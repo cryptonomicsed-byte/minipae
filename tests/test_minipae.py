@@ -18,6 +18,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import minipae as m
+import cap_bridge
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nip44_vectors.json")
 
@@ -243,6 +244,36 @@ class TestLocalSyncCache(unittest.TestCase):
 
     def test_missing_cache_file_returns_empty(self):
         self.assertEqual(m.load_cache("nonexistent", "nonexistent"), {})
+
+
+class TestCapBridge(unittest.TestCase):
+    def test_deterministic(self):
+        sk = m.secrets.token_bytes(32)
+        self.assertEqual(
+            cap_bridge.derive_cap_webhook_secret(sk, "pod-abc"),
+            cap_bridge.derive_cap_webhook_secret(sk, "pod-abc"),
+        )
+
+    def test_pod_scoped(self):
+        sk = m.secrets.token_bytes(32)
+        self.assertNotEqual(
+            cap_bridge.derive_cap_webhook_secret(sk, "pod-abc"),
+            cap_bridge.derive_cap_webhook_secret(sk, "pod-xyz"),
+        )
+
+    def test_rotation_changes_secret(self):
+        sk = m.secrets.token_bytes(32)
+        self.assertNotEqual(
+            cap_bridge.derive_cap_webhook_secret(sk, "pod-abc", version=1),
+            cap_bridge.derive_cap_webhook_secret(sk, "pod-abc", version=2),
+        )
+
+    def test_rejects_bad_input(self):
+        sk = m.secrets.token_bytes(32)
+        with self.assertRaises(ValueError):
+            cap_bridge.derive_cap_webhook_secret(b"short", "pod")
+        with self.assertRaises(ValueError):
+            cap_bridge.derive_cap_webhook_secret(sk, "")
 
 
 if __name__ == "__main__":
