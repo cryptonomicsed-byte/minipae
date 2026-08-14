@@ -101,19 +101,70 @@ triggered — same `image:`-pinned pattern from 2.1).
 (`/opt/genteam/minipae:/opt/minipae:ro`) so `ga_bridge.py` can `import
 minipae` directly, same pattern as the hermes CLI mount from 2.1.
 
-## Running it for real
+## Running it for real — now a supervised long-lived service
 
-`ga_bridge.py` is not currently running as a supervised long-lived
-process — it was run under a test harness for the live proof above and
-then stopped/cleaned up. For production use, run it under a real process
-supervisor (systemd unit, or a dedicated no-restart-loop container) — a
-bare `nohup &` was sufficient for testing but a genuinely long-lived
-bridge should be supervised properly (auto-restart on crash, log
-rotation), which wasn't set up as part of this deliverable.
+`ga_bridge.py` runs as its own Docker Compose service (`ga-bridge`,
+container `minipae-ga-bridge`) on the VPS, `restart: unless-stopped`,
+reusing the existing `sdk-fixed` image (no new build, no disk cost).
+Re-verified end to end through the supervised instance, not just the
+earlier ad-hoc test harness: a real channel message → mirrored → `ok`.
+
+Three more real issues found getting the service itself right, beyond
+the application-level bugs above:
+
+1. **The base image's `ENTRYPOINT` swallows `command:`.** The Dockerfile
+   sets `ENTRYPOINT ["/app/docker-entrypoint.sh"]`, which ignores its
+   argv and always starts the OpenAgents network — so a plain `command:`
+   override in Compose was silently passed as *args* to that script and
+   ignored; the "bridge" container was actually just running a second,
+   redundant copy of the main network. Fix: `entrypoint: []` to clear it
+   first.
+2. **The base image's `HEALTHCHECK` (curl `:8700/api/health`) is
+   inherited too**, and this service doesn't serve HTTP on that port —
+   would always report unhealthy for no real reason. Fix:
+   `healthcheck: {disable: true}`.
+3. **A fixed `agent_id` doesn't survive an ungraceful restart.** After
+   `docker kill`-ing the container to test the restart policy, the
+   restarted process failed with the same "already registered" collision
+   from earlier testing — the network's in-memory registration for that
+   agent_id doesn't get cleaned up fast enough (or at all, without a
+   graceful SIGTERM shutdown handler this script doesn't implement) for
+   an immediate reconnect to succeed. Fix: the container's startup
+   command appends a fresh timestamp to the agent_id on every start
+   (`minipae-ga-bridge-svc-$(date +%s)`) — this bridge has no per-instance
+   state that needs a stable identity across restarts, so a changing ID
+   is harmless and sidesteps the collision entirely. Confirmed working
+   after the fix: killed the container, it came back up cleanly on the
+   next `docker compose up`, connected under a new ID, no manual
+   intervention needed for the collision itself.
+
+**One caveat honestly noted, not glossed over**: testing `restart:
+unless-stopped` via `docker kill` directly doesn't actually exercise the
+policy — Docker treats a user-initiated `docker kill`/`docker stop` as
+"stopped by the user," which `unless-stopped` deliberately does NOT
+override (that's the whole point of "unless stopped"). So killing it
+manually and finding it stayed down was *correct* behavior, not a bug —
+confirmed by re-reading Docker's own semantics after initially
+mis-testing this. What actually matters — recovery from a genuine
+in-process crash — was already proven for real by the agent-id collision
+crash-loop above (`RestartCount=4` before the fix, each attempt a real
+automatic recovery from a real unhandled exception, not a manual
+intervention).
+
+Key handling: the nsec lives in a 0600 file
+(`/opt/genteam/minipae/.secrets/ga_bridge.nsec` on the VPS host, mounted
+read-only into the container), read into `NIPAE_NSEC` by the container's
+own startup shell — never in `docker-compose.yml`, never in
+`environment:` (which is visible via `docker inspect`), never as a
+process argv (which is visible via plain `ps`, the class of exposure
+already found and flagged for the unrelated `gtm_` credential earlier in
+this session).
 
 ```bash
-NIPAE_NSEC=<agent key> \
+# how it's actually invoked (docker-compose.yml's ga-bridge service):
 NIPAE_RELAY=ws://localhost:3000 \
 NIPAE_RELAY_CONNECT_URL=ws://buzz-prod-relay-1:3000 \
-  python3 ga_bridge.py --network-url grpc://localhost:8600
+NIPAE_NSEC="$(cat /run/secrets/ga_bridge.nsec | grep -v '^#')" \
+  python3 ga_bridge.py --agent-id minipae-ga-bridge-svc-$(date +%s) \
+                       --network-url grpc://openagents:8600
 ```
