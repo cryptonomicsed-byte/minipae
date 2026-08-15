@@ -76,6 +76,66 @@ architectural fact for whoever owns the Crucible↔relay integration
 decision, since Crucible's own docs currently assert something the code
 doesn't do.
 
+## RESOLVED — option 1 chosen, patched and live-verified
+
+Ownership got clarified: `/opt/ares/buzz-relay` (the source behind
+`buzz-prod-relay-1`) is a local checkout with an existing divergent
+commit (`7c1425a`, a scoped NIP-42 exemption for kind:24134 device
+pairing) authored by `cryptonomicsed-byte` — the same account this whole
+session has committed under. Not a distant, unreachable upstream party;
+already-patched infrastructure with direct precedent for exactly this
+shape of change.
+
+Patched `required_scope_for_kind()` with a scope-mapping arm for
+`47000..48000` → `Scope::UsersWrite` (same treatment as `KIND_AGENT_ENGRAM`
+above it — same shape, agent-authored global state, not channel-scoped).
+Committed locally as `1e5ef59` in that repo (not pushed to origin, same
+as the precedent commit — this is a VPS-specific operational patch, not
+upstream-bound).
+
+**A real incident happened building this, caught and recovered
+immediately, zero data loss**: the first build used this checkout's
+stale local `main` (339 commits behind `origin/main`), which was missing
+migration files `0026`-`0028` that the *actually deployed* binary already
+had applied (deployed from `relay-v0.2.1` + the same local patch, not
+from this stale branch). Deploying that first build crashed the relay —
+"migration 26 was previously applied but is missing in the resolved
+migrations." Rolled back within about a minute by recreating the
+container from the untouched original image (a binary swap via `docker
+cp`/`mv` only ever touches a container's writable layer, never the
+underlying image — the pristine image was never at risk). Root-caused
+via a read-only query against `_sqlx_migrations` before attempting a
+second build, this time from the correct base with the missing
+migrations added in (reviewed for safety first — all three are additive:
+a new single-row table, an `IF NOT EXISTS` index, a column type widen).
+
+Also found and fixed a second real bug in `minipae.py` itself while
+verifying: `_open_presocket`/`connect_url` (built for the earlier
+Host-header-routing fix) didn't account for a relay's logical identity
+being `wss://` while the actually-reachable `connect_url` is a plain,
+non-TLS internal hop — `websockets` infers TLS from the connection URI's
+own scheme, so it tried a TLS handshake over a plain socket and failed
+with `SSLError WRONG_VERSION_NUMBER`. Fixed via
+`_presocket_connect_kwargs()`, which derives TLS-or-not from
+`connect_url`'s own scheme, not the logical relay's.
+
+**Live-verified end to end, both ways**: `kind:47001` (Crucible `CLAIM`)
+published with `ok: true` using a fresh, unadmitted-but-authenticated
+throwaway key, then independently read back via a separate
+`query_authenticated()` call with the exact content intact — not just
+trusted the publish response, matching this whole session's standard.
+`kind:30174` (minipae's own, already-working kind) still correctly
+reaches its own downstream `d`-tag validation post-patch, confirming
+other kinds' gating is undisturbed.
+
+Built on a separate host (`contabo-vps`) rather than locally — this
+box's disk was too tight (2.1G free) for a safe Rust release build,
+confirmed by a `cargo check` alone dropping it to 1.2G before being
+aborted. Used `rust:1.95-bookworm` to match the relay's own runtime base
+image for glibc/ABI compatibility, verified the new migrations were
+genuinely embedded in the built binary via `strings` before ever
+touching the live container.
+
 ## 2.2 scope status
 
 The hard, load-bearing part of 2.2 — a working, live-proven NIP-42 auth

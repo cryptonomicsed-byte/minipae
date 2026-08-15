@@ -440,6 +440,32 @@ def build_auth_event(challenge: str, relay_url: str, seckey: bytes) -> dict:
     return ev
 
 
+def _presocket_connect_kwargs(connect_url: str | None) -> dict:
+    """Build the sock=/ssl= kwargs for websockets.connect() when routing
+    around a relay's logical identity via a pre-connected socket.
+
+    The relay URI passed to websockets.connect() still drives the Host
+    header and path — that's the whole point of the presocket trick (see
+    publish_authenticated's docstring). But websockets ALSO infers whether
+    to negotiate TLS from that same URI's scheme, and a relay's logical
+    identity is often wss:// (its real public address) even when the
+    connect_url reaching it locally is a plain ws:// port (e.g. an
+    internal Docker network hop with no TLS termination on that hop).
+    Without this, websockets tries a TLS handshake over a plain socket and
+    fails with SSLError WRONG_VERSION_NUMBER — found live testing the
+    Crucible relay patch (docs/D_2_2_RELAY_KIND_COMPATIBILITY.md), not
+    assumed. TLS-or-not must follow connect_url's own scheme, the thing
+    actually being connected to, not relay's."""
+    if not connect_url:
+        return {}
+    presock = _open_presocket(connect_url)
+    kwargs = {"sock": presock}
+    from urllib.parse import urlparse
+    if urlparse(connect_url).scheme not in ("wss", "https"):
+        kwargs["ssl"] = None
+    return kwargs
+
+
 def _open_presocket(connect_url: str):
     """Open a real, connected, non-blocking TCP socket to connect_url's
     host:port, for use as websockets.connect's `sock=` override."""
@@ -477,8 +503,7 @@ async def publish_authenticated(relay: str, event: dict, seckey: bytes,
     relay itself expects, independent of how the connection is routed.
     """
     import websockets
-    presock = _open_presocket(connect_url) if connect_url else None
-    connect_kwargs = {"sock": presock} if presock else {}
+    connect_kwargs = _presocket_connect_kwargs(connect_url)
     async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024,
                                   **connect_kwargs) as ws:
         await ws.send(json.dumps(["EVENT", event]))
@@ -536,8 +561,7 @@ async def query_authenticated(relay: str, authors: list[str], seckey: bytes,
     filt = {"kinds": kinds or [KIND_AGENT_ENGRAM], "authors": authors, "limit": 500}
     if since is not None:
         filt["since"] = since
-    presock = _open_presocket(connect_url) if connect_url else None
-    connect_kwargs = {"sock": presock} if presock else {}
+    connect_kwargs = _presocket_connect_kwargs(connect_url)
     async with websockets.connect(relay, open_timeout=15, max_size=10 * 1024 * 1024,
                                   **connect_kwargs) as ws:
         req_sent = False

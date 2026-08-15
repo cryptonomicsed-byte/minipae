@@ -306,6 +306,41 @@ class TestOpenPresocket(unittest.TestCase):
             m._open_presocket("ws://this-host-should-not-resolve.invalid:3000")
 
 
+class TestPresocketConnectKwargs(unittest.TestCase):
+    """Found live testing the Crucible relay patch: a relay's logical
+    identity can be wss:// while the actually-reachable connect_url is a
+    plain ws:// internal hop. websockets infers TLS from the connection
+    URI's scheme, so without this, it tries a TLS handshake over a plain
+    socket and fails with SSLError WRONG_VERSION_NUMBER. TLS-or-not must
+    follow connect_url's own scheme, not the logical relay's."""
+
+    def setUp(self):
+        import socket
+        self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+
+    def tearDown(self):
+        self.srv.close()
+
+    def test_no_connect_url_returns_empty(self):
+        self.assertEqual(m._presocket_connect_kwargs(None), {})
+
+    def test_plain_ws_disables_tls(self):
+        kwargs = m._presocket_connect_kwargs(f"ws://127.0.0.1:{self.port}")
+        self.assertIn("sock", kwargs)
+        self.assertIn("ssl", kwargs)
+        self.assertIsNone(kwargs["ssl"])
+        kwargs["sock"].close()
+
+    def test_wss_leaves_tls_enabled(self):
+        kwargs = m._presocket_connect_kwargs(f"wss://127.0.0.1:{self.port}")
+        self.assertIn("sock", kwargs)
+        self.assertNotIn("ssl", kwargs)
+        kwargs["sock"].close()
+
+
 class TestCapBridge(unittest.TestCase):
     def test_deterministic(self):
         sk = m.secrets.token_bytes(32)
