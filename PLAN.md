@@ -120,9 +120,18 @@ network's native protocol — needs a decision, documented with three
 options, not yet chosen.
 2.2: DONE — NIP-42 auth implemented and live-proven against the real
 production Buzz relay. This incidentally proved Crucible's own docs
-wrong — kinds 47001-47007 are rejected by the deployed relay ("restricted:
-unknown event kind"), confirmed both from source and live,
-post-authentication. The OpenAgents↔Buzz bridge agent itself
+wrong — kinds 47001-47007 were rejected by the deployed relay
+("restricted: unknown event kind"), confirmed both from source and live,
+post-authentication. **Since resolved**: patched the relay's
+`required_scope_for_kind()` (ownership traced to the same account this
+session commits under — not an unreachable third party), built on a
+separate host after this VPS's disk proved too tight for a safe Rust
+build, survived and recovered from a real migration-mismatch incident
+mid-deploy (caught immediately, zero data loss, rolled back in under a
+minute), and live-verified both directions post-patch (kind 47001
+accepted + independently read back; kind 30174 unaffected). Full account
+in `docs/D_2_2_RELAY_KIND_COMPATIBILITY.md`'s "RESOLVED" section. The
+OpenAgents↔Buzz bridge agent itself
 (`ga_bridge.py`, a genuine SDK-connected local-network agent, not a REST
 poller) was subsequently built, deployed, and live-proven end to end: a
 real channel message posted in the local OpenAgents network was mirrored
