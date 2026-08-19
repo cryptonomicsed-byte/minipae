@@ -1,3 +1,8 @@
+> **Historical handoff doc, superseded.** This captured the 2026-08-13 mid-Phase-1/2
+> handoff state. All phases described as NEXT/IN PROGRESS below are now DONE —
+> see `PLAN.md` for the current, accurate status. Kept as-is for the process/testing-
+> protocol record, not as a live status source.
+
 # ORCHESTRATION.md — coordinator handoff (Hermes = orchestrator/tester)
 
 ## Role boundaries (user mandate, 2026-08-13)
