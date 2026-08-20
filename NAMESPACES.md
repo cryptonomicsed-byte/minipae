@@ -34,6 +34,7 @@ per the locked plan).
 | `mem/waggle/*`  | Waggle field signals (Agentic)             | planned  |
 | `mem/loom/*`    | Loom agent-collaboration pool              | planned  |
 | `mem/triune/*`  | Triune-Memory orchestrator phase state     | planned  |
+| `mem/phone/*`   | agent-phone identity binding, voicemail    | planned  |
 
 ## Which implementation to use
 
