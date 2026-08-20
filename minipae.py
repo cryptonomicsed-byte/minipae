@@ -35,6 +35,8 @@ import argparse
 import base64
 import hashlib
 import hmac
+import re
+import unicodedata
 import json
 import os
 import secrets
@@ -367,6 +369,97 @@ def d_tag(slug: str, conversation_key_: bytes) -> str:
                     hashlib.sha256).hexdigest()
 
 
+# --------------------------------------------------------------------------
+# adapter kit — shared helpers for the organs that write engrams
+#
+# Mycelium, Loom, Waggle and the other Python organs each need the same three
+# things before they can put a domain object on the wire: a slug that satisfies
+# validate_slug, an event of a kind this module has no dedicated builder for,
+# and agreement with every other implementation about both. Those are contract
+# concerns, not organ concerns, so they live here rather than being written
+# once per organ -- the contract's failure mode is silent divergence, and four
+# copies of this logic is four chances to diverge.
+# --------------------------------------------------------------------------
+
+
+def normalize_slug_segment(segment: str) -> str:
+    """Fold arbitrary text into one valid slug segment.
+
+    validate_slug accepts only [a-z0-9_-] per segment, at most 64 BYTES. Organ
+    data is free text -- miner names, resource URIs, ritual names in Yoruba --
+    so an unnormalised segment yields a slug this module refuses and an engram
+    no client can address, failing in some other process rather than at the
+    call site.
+
+    Strips combining marks (so "Ọ̀run" folds toward "orun"), case-folds, and
+    maps anything still outside the grammar to a single dash.
+
+    Normalising is safe because a slug is HMAC'd into the d tag before it
+    reaches the wire: it is an addressing key, never display text. The original
+    belongs in the engram content.
+
+    Raises ValueError when nothing survives, rather than returning an empty
+    segment that would build a slug failing validate_slug later.
+    """
+    decomposed = unicodedata.normalize("NFD", str(segment))
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    folded = re.sub(r"[^a-z0-9_-]+", "-", stripped.casefold())
+    folded = re.sub(r"-{2,}", "-", folded).strip("-")
+
+    # Truncate on bytes: the 64 limit is bytes, and a multi-byte segment is
+    # longer in bytes than in characters, so len() would let it through.
+    while len(folded.encode()) > 64:
+        folded = folded[:-1]
+    folded = folded.strip("-")
+
+    if not folded:
+        raise ValueError(
+            f"slug segment {segment!r} normalises to nothing; "
+            "it cannot be used as an engram address"
+        )
+    return folded
+
+
+def build_slug(namespace: str, *segments: str) -> str:
+    """Build a validated slug under mem/<namespace>/.
+
+    Register the namespace in NAMESPACES.md before the first write -- that file
+    is the source of truth and its own rules require it.
+    """
+    parts = [normalize_slug_segment(namespace)]
+    parts.extend(normalize_slug_segment(s) for s in segments)
+    slug = "mem/" + "/".join(parts)
+    if not validate_slug(slug):
+        raise ValueError(f"built an invalid engram slug: {slug}")
+    return slug
+
+
+def sign_event(kind: int, content: str, tags: list, seckey: bytes) -> dict:
+    """Assemble and sign an event of any kind.
+
+    build_event covers kind:30174 and build_auth_event covers kind:22242, but
+    an organ publishing a Crucible claim (47001) had no builder and would
+    otherwise hand-roll the id-then-sign sequence. Getting that subtly wrong
+    produces an event that verifies nowhere, so it belongs here once.
+
+    The signature is over the id, and the id is over the final field set, so
+    nothing may be added to the event after this returns.
+    """
+    pubkey = pubkey_from_secret(int.from_bytes(seckey, "big"))
+    ev = {
+        "kind": kind,
+        "pubkey": pubkey.hex(),
+        "created_at": int(time.time()),
+        "tags": tags,
+        "content": content,
+    }
+    ev["id"] = event_id(ev)
+    ev["sig"] = schnorr_sign(
+        bytes.fromhex(ev["id"]), int.from_bytes(seckey, "big"), secrets.token_bytes(32)
+    ).hex()
+    return ev
+
+
 def build_event(slug: str, body: dict, seckey: bytes, owner_pubkey: bytes) -> dict:
     kc = conversation_key(seckey, owner_pubkey)
     content = nip44_encrypt(json.dumps(body, separators=(",", ":")), kc)
@@ -386,6 +479,25 @@ def build_event(slug: str, body: dict, seckey: bytes, owner_pubkey: bytes) -> di
 
 
 def event_id(ev: dict) -> str:
+    # ensure_ascii=False is load-bearing, not cosmetic. NIP-01 hashes the
+    # canonical serialization as raw UTF-8; Python's json.dumps defaults to
+    # ensure_ascii=True and escapes non-ASCII to \uXXXX, which hashes to a
+    # DIFFERENT id than every other implementation (JS's JSON.stringify and
+    # Rust's serde both emit raw UTF-8). Since the signature is over the id,
+    # that mismatch makes this client's events fail verification everywhere
+    # else, and other clients' events fail verification here -- with no error
+    # anywhere that points at serialization as the cause.
+    #
+    # Measured, for content "Òrìṣà Ògún":
+    #   ensure_ascii=True   -> f5ceda251451b3571736436644e34ca50eca23ad68ea3e067934e5f8668c2337
+    #   ensure_ascii=False  -> e24b148552d35adf425c92e2e701ee3be6b4c86dbfd5fa2cc84a4c922250ac3b
+    #
+    # This was latent while every field reaching the hash happened to be
+    # ASCII (engram content is NIP-44 ciphertext in base64, d tags are HMAC
+    # hex). It activates for any non-ASCII in a tag value or in an
+    # unencrypted event such as a Crucible claim -- and this ecosystem's
+    # vocabulary is Yorùbá, so ritual, vessel and Òrìṣà names all carry
+    # diacritics. See tests/test_minipae.py::test_event_id_non_ascii.
     serial = json.dumps([
         0,
         ev["pubkey"],
@@ -393,7 +505,7 @@ def event_id(ev: dict) -> str:
         ev["kind"],
         ev["tags"],
         ev["content"],
-    ], separators=(",", ":"))
+    ], separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(serial.encode()).hexdigest()
 
 

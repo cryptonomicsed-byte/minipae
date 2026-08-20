@@ -25,6 +25,52 @@ per the locked plan).
 | `mem/commonly/*`| Commonly CAP pod state                    | planned  |
 | `mem/openclaw/*`| OpenClaw agent state/skills (Phase 3.1 G1) | planned  |
 | `mem/skills/*`  | Shared skill catalog (de_deliver receipts)| active   |
+| `mem/ifa/*`     | IfáScript ritual casts and agent state    | active   |
+| `mem/zangbeto/*`| Zàngbétò enforcement receipts             | active   |
+| `mem/koodu/*`   | Kóòdù gate decisions (unsigned events)    | active   |
+| `mem/osovm/*`   | Ọ̀ṢỌ́VM job execution results               | active   |
+| `mem/organism/*`| organism-core bridge/breath state          | active   |
+| `mem/mycelium/*`| Mycelium stigmergic traces and findings    | planned  |
+| `mem/waggle/*`  | Waggle field signals (Agentic)             | planned  |
+| `mem/loom/*`    | Loom agent-collaboration pool              | planned  |
+| `mem/triune/*`  | Triune-Memory orchestrator phase state     | planned  |
+
+## Which implementation to use
+
+Do not write a fourth implementation of the wire contract. There is one
+per language, and each is pinned against the same cross-language event-id
+vector:
+
+| Language   | Module                                    | Signs? |
+|------------|-------------------------------------------|--------|
+| Python     | `minipae.py` (this repo)                  | yes    |
+| Rust       | `ifascript::nostr`, `zangbeto_enforcement::nostr_bridge` | yes |
+| TypeScript | `organism-core/bridge/nostr-wire.ts`      | no     |
+| Julia      | `OSOVM/src/nostr_bridge.jl`               | no     |
+| JavaScript | `Koodu/nostr-adapter.js`                  | no     |
+
+The "no" rows build canonical unsigned events for a key holder to sign —
+those components hold no agent keys and should not, since a second key for
+one agent is indistinguishable on the wire from a second agent.
+
+The TypeScript module is namespace-parameterised, so a TS organ passes its
+own prefix rather than forking it.
+
+## Slug grammar is stricter than the namespace rule
+
+`validate_slug` accepts only `[a-z0-9_-]` within each `/`-separated segment,
+each at most 64 bytes, the whole slug at most 255. **Capitals and diacritics
+are rejected.**
+
+That is easy to miss for adapters in this ecosystem, whose vocabulary is
+Yorùbá: `mem/koodu/gate/Friday/ọjọ́-ògún-forge` looks reasonable and is
+refused, producing an engram no minipae client can address. Every adapter
+above normalises its segments (strip combining marks, fold case, map the rest
+to `-`) before building a slug, and validates the result.
+
+Normalising is safe because a slug is HMAC'd into the `d` tag before it
+reaches the wire — it is an addressing key, never display text. The Yorùbá
+name belongs in the engram *content*, where it round-trips intact.
 
 ## Example slugs
 

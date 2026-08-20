@@ -371,5 +371,144 @@ class TestCapBridge(unittest.TestCase):
             cap_bridge.derive_cap_webhook_secret(sk, "")
 
 
+class TestEventIdCanonicalSerialization(unittest.TestCase):
+    """NIP-01 ids must agree byte-for-byte with every other implementation.
+
+    The signature is over the id, so an id computed from a differently-escaped
+    serialization makes this client's events unverifiable elsewhere and other
+    clients' events unverifiable here -- and nothing in the resulting error
+    points at serialization.
+    """
+
+    # A Yoruba string, because that is what this ecosystem actually publishes.
+    NON_ASCII = "\u00d2r\u00ec\u1e63\u00e0 \u00d2g\u00fan"
+
+    def _ev(self, content):
+        return {
+            "pubkey": "a" * 64,
+            "created_at": 1700000000,
+            "kind": 30174,
+            "tags": [],
+            "content": content,
+        }
+
+    def test_event_id_non_ascii(self):
+        # Pinned against the value independently computed in Rust, in
+        # JavaScript (JSON.stringify) and in Julia. The ensure_ascii=True form
+        # -- Python's default, and the bug this pins shut -- would instead give
+        # f5ceda251451b3571736436644e34ca50eca23ad68ea3e067934e5f8668c2337.
+        self.assertEqual(
+            m.event_id(self._ev(self.NON_ASCII)),
+            "e24b148552d35adf425c92e2e701ee3be6b4c86dbfd5fa2cc84a4c922250ac3b",
+        )
+
+    def test_event_id_matches_raw_utf8_serialization(self):
+        # Stated as a property rather than a constant, so the intent survives
+        # even if the vector above is ever regenerated.
+        ev = self._ev(self.NON_ASCII)
+        expected_serial = m.json.dumps(
+            [0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+            separators=(",", ":"), ensure_ascii=False,
+        )
+        self.assertEqual(
+            m.event_id(ev),
+            m.hashlib.sha256(expected_serial.encode()).hexdigest(),
+        )
+
+    def test_escaped_form_would_differ(self):
+        # Guards the regression directly: if someone drops ensure_ascii=False,
+        # event_id starts returning this value and the test above fails -- but
+        # this one documents *why* the two differ at all.
+        ev = self._ev(self.NON_ASCII)
+        escaped_serial = m.json.dumps(
+            [0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+            separators=(",", ":"),
+        )
+        escaped_id = m.hashlib.sha256(escaped_serial.encode()).hexdigest()
+        self.assertNotEqual(m.event_id(ev), escaped_id)
+
+    def test_ascii_content_is_unaffected(self):
+        # The fix must not move any id that was already correct, or every
+        # previously-published ASCII engram would change address.
+        ev = self._ev("plain ascii")
+        serial = m.json.dumps(
+            [0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+            separators=(",", ":"),
+        )
+        self.assertEqual(
+            m.event_id(ev),
+            m.hashlib.sha256(serial.encode()).hexdigest(),
+        )
+
+    def test_non_ascii_in_a_tag_also_reaches_the_hash(self):
+        # Tags are not encrypted, so this is the path most likely to carry a
+        # Yoruba string in practice.
+        ev = self._ev("ciphertext")
+        ev["tags"] = [["ritual", self.NON_ASCII]]
+        serial = m.json.dumps(
+            [0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+            separators=(",", ":"), ensure_ascii=False,
+        )
+        self.assertEqual(
+            m.event_id(ev),
+            m.hashlib.sha256(serial.encode()).hexdigest(),
+        )
+
+
+class TestAdapterKit(unittest.TestCase):
+    """Helpers the organs share, so each does not grow its own copy."""
+
+    def test_normalises_case_diacritics_and_separators(self):
+        self.assertEqual(m.normalize_slug_segment("Ọ̀rúnmìlà"), "orunmila")
+        self.assertEqual(m.normalize_slug_segment("Recurring Workflow"),
+                         "recurring-workflow")
+        self.assertEqual(m.normalize_slug_segment("repo://A/B.rs"), "repo-a-b-rs")
+
+    def test_truncates_on_bytes_not_characters(self):
+        # The 64 limit is bytes. A multi-byte segment is longer in bytes than
+        # in characters, so truncating on len() would emit an invalid slug.
+        seg = m.normalize_slug_segment("é" * 60)
+        self.assertLessEqual(len(seg.encode()), 64)
+        self.assertTrue(m.validate_slug("mem/x/" + seg))
+
+    def test_a_segment_that_normalises_to_nothing_raises(self):
+        with self.assertRaises(ValueError):
+            m.normalize_slug_segment("!!!")
+        with self.assertRaises(ValueError):
+            m.normalize_slug_segment("")
+
+    def test_build_slug_produces_something_validate_slug_accepts(self):
+        slug = m.build_slug("mycelium", "finding", "Ọ̀rúnmìlà Pattern")
+        self.assertEqual(slug, "mem/mycelium/finding/orunmila-pattern")
+        self.assertTrue(m.validate_slug(slug))
+
+    def test_build_slug_normalises_the_namespace_too(self):
+        self.assertTrue(m.validate_slug(m.build_slug("Mycelium", "x")))
+
+    def test_sign_event_produces_a_verifiable_event(self):
+        # The gap this fills: build_event covers 30174 and build_auth_event
+        # covers 22242, so an organ publishing a Crucible claim would
+        # otherwise hand-roll the id-then-sign sequence.
+        sk = bytes([0x22]) * 32
+        ev = m.sign_event(47001, '{"a":1}', [["falsifier", "sha256:x"]], sk)
+        self.assertEqual(ev["kind"], 47001)
+        self.assertEqual(ev["id"], m.event_id(ev))
+        self.assertTrue(
+            m.schnorr_verify(
+                bytes.fromhex(ev["id"]),
+                m.pubkey_from_secret(int.from_bytes(sk, "big")),
+                bytes.fromhex(ev["sig"]),
+            )
+        )
+
+    def test_sign_event_id_covers_every_signed_field(self):
+        # The signature is over the id and the id is over the final field set,
+        # so a mutation after signing must invalidate it.
+        sk = bytes([0x22]) * 32
+        ev = m.sign_event(47001, "{}", [], sk)
+        tampered = dict(ev, content='{"b":2}')
+        self.assertNotEqual(tampered["id"], m.event_id(tampered))
+
+
 if __name__ == "__main__":
     unittest.main()
