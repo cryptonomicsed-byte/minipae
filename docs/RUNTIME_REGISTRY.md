@@ -1,9 +1,9 @@
 # RUNTIME_REGISTRY.md — runtime registration inventory (Phase 3.1 feed)
 
-Status: RESEARCH / DESIGN ONLY. No implementation in this lane (role split per
-ORCHESTRATION.md: panels code, Hermes orchestrates + tests). This doc feeds
-Phase 3.1 ("register all runtimes as agents/computers") and MUST be converted
-into a machine-readable registry (see §5) by the coding panes when 3.1 lands.
+Status: IMPLEMENTED. Phase 3.1 landed — see `runtime_registry.json` (repo
+root) for the real, schema-tested, live-checked registry this doc specified.
+This file remains the design rationale/spec; the JSON file is the source of
+truth for current registration state.
 
 Scope: the four execution-fleet runtimes named in the Phase-3 brief —
 genteam-daemon, OpenClaw, Hermes, Vantage. OpenAgents and Commonly appear here

@@ -1,9 +1,10 @@
 # SKILL_CATALOG.md — shared skill catalog schema (Phase 3.2 feed)
 
-Status: RESEARCH / DESIGN ONLY. No implementation in this lane (role split per
-ORCHESTRATION.md). This doc is the design substrate for Phase 3.2 ("shared
-skill catalog, de_* verb vocabulary as tool contract"); the coding panes
-implement the catalog files + loader when 3.2 lands.
+Status: IMPLEMENTED. Phase 3.2 landed — see `skills/catalog.yaml` plus three
+real, tested skills (`de_verify_skill`, `de_package_docx`,
+`de_deliver_client_artifact`). This file remains the design rationale/spec;
+`skills/catalog.yaml` and each skill's `SKILL.md` are the source of truth for
+current catalog state.
 
 Goal: ONE catalog format that every runtime in the fleet (genteam-daemon,
 OpenClaw, Hermes, Vantage — plus OpenAgents/Commonly on the dispatch layer)
