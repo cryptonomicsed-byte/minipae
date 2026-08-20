@@ -175,27 +175,54 @@ engrams are private/NIP-44-encrypted; Crucible claims are intentionally
 public), tested to confirm private and public entries are never flattened
 into one undifferentiated list even when both exist.
 
-**Phase 4 — both skills done and live-verified; only the Vantage trigger
-wiring is outstanding.** GenOffice's README documents only Electron
-desktop apps, no headless service — looked like a blocker until the
-actual package source was checked: the underlying engine packages are
-Electron-free and usable headlessly, just not published to npm
-standalone. `de_package_docx` (4.1's document-worker capability) parses a
-real docx, generates new paragraphs via GenOffice's real API, produces
-structurally-valid output with exact requested content confirmed present.
-`de_deliver_client_artifact` (4.2's BPO pilot deliverable half) wraps it
-with a real, live-verified delivery-receipt engram under
-`mem/skills/de_deliver/<client>/*` — generation and publish both
-independently confirmed, including a separate readback proving the exact
-recorded content. What's not done: wiring either skill to an actual
-Vantage broadcast-intent trigger. That trigger's schema is explicitly
-**not yet defined** (confirmed directly to wD, who is building the
-Vantage-side adapter) — "broadcast-intent" was aspirational language in
-the original plan-v3 success criteria, not a concrete contract; the real,
-concrete contract that exists today is each skill's own JSON Schema
-`inputs` in its `SKILL.md`. Whether Vantage invokes these synchronously or
-via an engram-triggered async path is an open joint decision, not yet
-made.
+**Phase 4 — both skills done and live-verified. 4.1's Vantage trigger is
+now live; 4.2's is blocked on a separate, pre-existing cross-relay gap.**
+GenOffice's README documents only Electron desktop apps, no headless
+service — looked like a blocker until the actual package source was
+checked: the underlying engine packages are Electron-free and usable
+headlessly, just not published to npm standalone. `de_package_docx`
+(4.1's document-worker capability) parses a real docx, generates new
+paragraphs via GenOffice's real API, produces structurally-valid output
+with exact requested content confirmed present. `de_deliver_client_artifact`
+(4.2's BPO pilot deliverable half) wraps it with a real, live-verified
+delivery-receipt engram under `mem/skills/de_deliver/<client>/*` —
+generation and publish both independently confirmed, including a
+separate readback proving the exact recorded content.
+
+**4.1 trigger — DONE, confirmed by wD 2026-08-19**: live in Vantage's
+`backend/routers/copilot.py`, `POST /api/copilot/execute` with
+`action='generate_document'` — `{action:'generate_document',
+target:'document', data:{template_path, output_path, paragraphs[]}}`
+(falls back to topic/free-text split on newlines if `paragraphs` is
+omitted). Wired via `genoffice_client.py` calling
+`de_package_docx.generate_docx()` in-process (matches minipae's stated
+preference over a subprocess boundary — verified in
+`skills/de_package_docx/generate.py`'s `generate_docx(template_path,
+output_path, paragraphs, ...)` signature). Contract is **sync direct
+invocation**, per the 2026-08-14 PLAN-LOCK — not engram/async; that part
+of the decision stands. Live-verified 2026-08-14 against a real GenOffice
+clone (valid OOXML checked by unzipping `word/document.xml`). Not yet
+activated in production — `GENOFFICE_SKILLS_PATH`/`GENOFFICE_REPO` are
+unset on the VPS (empty = disabled, same pattern as minipae's other
+pluggable hooks); deploying it live is a real next step, not done.
+
+**4.2 trigger — still open, but the blocker is relay interop, not a
+missing schema.** `de_deliver_client_artifact` writes its delivery-receipt
+engram via `NIPAE_NSEC`/`NIPAE_RELAY`. Vantage's NIP-AE mirror publishes
+to `omokoda.duckdns.org:3443`; minipae's proven roundtrip is on
+`relay.damus.io` — different relays, not yet interoperable, per
+`Vantage-to-wM_minipae_relay_check-20260814T015213Z`. This is the same
+cross-relay gap flagged in the last joint decision, unchanged since. Open
+question from wD, resolved 2026-08-19: define the placeholder sync contract
+now rather than wait for the relay bridge — no new design work needed,
+`de_deliver_client_artifact`'s SKILL.md already has a concrete JSON Schema
+(`{client, template_path, output_path, parts[]}`, all required). Proposed
+to wD as the same `POST /api/copilot/execute` pattern as 4.1,
+`action='deliver_client_artifact'`, `data` matching that schema 1:1 — sync
+invocation exactly like 4.1, publishing to whatever `NIPAE_RELAY` is set
+for that call, so pointing it at the interoperable relay once the bridge
+lands requires zero contract change. Awaiting wD's confirmation to lock
+it in.
 
 **Open items not resolved by anyone yet**: gtm_ credential rotation
 (investigated — worse than described, live in `ps auxww` right now, but
