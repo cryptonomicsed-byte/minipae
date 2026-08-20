@@ -25,6 +25,26 @@ per the locked plan).
 | `mem/commonly/*`| Commonly CAP pod state                    | planned  |
 | `mem/openclaw/*`| OpenClaw agent state/skills (Phase 3.1 G1) | planned  |
 | `mem/skills/*`  | Shared skill catalog (de_deliver receipts)| active   |
+| `mem/ifa/*`     | IfáScript ritual casts and agent state    | active   |
+| `mem/zangbeto/*`| Zàngbétò enforcement receipts             | active   |
+| `mem/koodu/*`   | Kóòdù gate decisions (unsigned events)    | active   |
+| `mem/osovm/*`   | Ọ̀ṢỌ́VM job execution results               | active   |
+
+## Slug grammar is stricter than the namespace rule
+
+`validate_slug` accepts only `[a-z0-9_-]` within each `/`-separated segment,
+each at most 64 bytes, the whole slug at most 255. **Capitals and diacritics
+are rejected.**
+
+That is easy to miss for adapters in this ecosystem, whose vocabulary is
+Yorùbá: `mem/koodu/gate/Friday/ọjọ́-ògún-forge` looks reasonable and is
+refused, producing an engram no minipae client can address. Every adapter
+above normalises its segments (strip combining marks, fold case, map the rest
+to `-`) before building a slug, and validates the result.
+
+Normalising is safe because a slug is HMAC'd into the `d` tag before it
+reaches the wire — it is an addressing key, never display text. The Yorùbá
+name belongs in the engram *content*, where it round-trips intact.
 
 ## Example slugs
 
