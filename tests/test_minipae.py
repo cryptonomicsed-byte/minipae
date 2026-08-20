@@ -371,5 +371,89 @@ class TestCapBridge(unittest.TestCase):
             cap_bridge.derive_cap_webhook_secret(sk, "")
 
 
+class TestEventIdCanonicalSerialization(unittest.TestCase):
+    """NIP-01 ids must agree byte-for-byte with every other implementation.
+
+    The signature is over the id, so an id computed from a differently-escaped
+    serialization makes this client's events unverifiable elsewhere and other
+    clients' events unverifiable here -- and nothing in the resulting error
+    points at serialization.
+    """
+
+    # A Yoruba string, because that is what this ecosystem actually publishes.
+    NON_ASCII = "\u00d2r\u00ec\u1e63\u00e0 \u00d2g\u00fan"
+
+    def _ev(self, content):
+        return {
+            "pubkey": "a" * 64,
+            "created_at": 1700000000,
+            "kind": 30174,
+            "tags": [],
+            "content": content,
+        }
+
+    def test_event_id_non_ascii(self):
+        # Pinned against the value independently computed in Rust, in
+        # JavaScript (JSON.stringify) and in Julia. The ensure_ascii=True form
+        # -- Python's default, and the bug this pins shut -- would instead give
+        # f5ceda251451b3571736436644e34ca50eca23ad68ea3e067934e5f8668c2337.
+        self.assertEqual(
+            m.event_id(self._ev(self.NON_ASCII)),
+            "e24b148552d35adf425c92e2e701ee3be6b4c86dbfd5fa2cc84a4c922250ac3b",
+        )
+
+    def test_event_id_matches_raw_utf8_serialization(self):
+        # Stated as a property rather than a constant, so the intent survives
+        # even if the vector above is ever regenerated.
+        ev = self._ev(self.NON_ASCII)
+        expected_serial = m.json.dumps(
+            [0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+            separators=(",", ":"), ensure_ascii=False,
+        )
+        self.assertEqual(
+            m.event_id(ev),
+            m.hashlib.sha256(expected_serial.encode()).hexdigest(),
+        )
+
+    def test_escaped_form_would_differ(self):
+        # Guards the regression directly: if someone drops ensure_ascii=False,
+        # event_id starts returning this value and the test above fails -- but
+        # this one documents *why* the two differ at all.
+        ev = self._ev(self.NON_ASCII)
+        escaped_serial = m.json.dumps(
+            [0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+            separators=(",", ":"),
+        )
+        escaped_id = m.hashlib.sha256(escaped_serial.encode()).hexdigest()
+        self.assertNotEqual(m.event_id(ev), escaped_id)
+
+    def test_ascii_content_is_unaffected(self):
+        # The fix must not move any id that was already correct, or every
+        # previously-published ASCII engram would change address.
+        ev = self._ev("plain ascii")
+        serial = m.json.dumps(
+            [0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+            separators=(",", ":"),
+        )
+        self.assertEqual(
+            m.event_id(ev),
+            m.hashlib.sha256(serial.encode()).hexdigest(),
+        )
+
+    def test_non_ascii_in_a_tag_also_reaches_the_hash(self):
+        # Tags are not encrypted, so this is the path most likely to carry a
+        # Yoruba string in practice.
+        ev = self._ev("ciphertext")
+        ev["tags"] = [["ritual", self.NON_ASCII]]
+        serial = m.json.dumps(
+            [0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+            separators=(",", ":"), ensure_ascii=False,
+        )
+        self.assertEqual(
+            m.event_id(ev),
+            m.hashlib.sha256(serial.encode()).hexdigest(),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

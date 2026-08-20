@@ -386,6 +386,25 @@ def build_event(slug: str, body: dict, seckey: bytes, owner_pubkey: bytes) -> di
 
 
 def event_id(ev: dict) -> str:
+    # ensure_ascii=False is load-bearing, not cosmetic. NIP-01 hashes the
+    # canonical serialization as raw UTF-8; Python's json.dumps defaults to
+    # ensure_ascii=True and escapes non-ASCII to \uXXXX, which hashes to a
+    # DIFFERENT id than every other implementation (JS's JSON.stringify and
+    # Rust's serde both emit raw UTF-8). Since the signature is over the id,
+    # that mismatch makes this client's events fail verification everywhere
+    # else, and other clients' events fail verification here -- with no error
+    # anywhere that points at serialization as the cause.
+    #
+    # Measured, for content "Òrìṣà Ògún":
+    #   ensure_ascii=True   -> f5ceda251451b3571736436644e34ca50eca23ad68ea3e067934e5f8668c2337
+    #   ensure_ascii=False  -> e24b148552d35adf425c92e2e701ee3be6b4c86dbfd5fa2cc84a4c922250ac3b
+    #
+    # This was latent while every field reaching the hash happened to be
+    # ASCII (engram content is NIP-44 ciphertext in base64, d tags are HMAC
+    # hex). It activates for any non-ASCII in a tag value or in an
+    # unencrypted event such as a Crucible claim -- and this ecosystem's
+    # vocabulary is Yorùbá, so ritual, vessel and Òrìṣà names all carry
+    # diacritics. See tests/test_minipae.py::test_event_id_non_ascii.
     serial = json.dumps([
         0,
         ev["pubkey"],
@@ -393,7 +412,7 @@ def event_id(ev: dict) -> str:
         ev["kind"],
         ev["tags"],
         ev["content"],
-    ], separators=(",", ":"))
+    ], separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(serial.encode()).hexdigest()
 
 
