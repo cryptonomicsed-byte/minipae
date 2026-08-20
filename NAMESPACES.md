@@ -29,6 +29,32 @@ per the locked plan).
 | `mem/zangbeto/*`| Zàngbétò enforcement receipts             | active   |
 | `mem/koodu/*`   | Kóòdù gate decisions (unsigned events)    | active   |
 | `mem/osovm/*`   | Ọ̀ṢỌ́VM job execution results               | active   |
+| `mem/organism/*`| organism-core bridge/breath state          | active   |
+| `mem/mycelium/*`| Mycelium stigmergic traces and findings    | planned  |
+| `mem/waggle/*`  | Waggle field signals (Agentic)             | planned  |
+| `mem/loom/*`    | Loom agent-collaboration pool              | planned  |
+| `mem/triune/*`  | Triune-Memory orchestrator phase state     | planned  |
+
+## Which implementation to use
+
+Do not write a fourth implementation of the wire contract. There is one
+per language, and each is pinned against the same cross-language event-id
+vector:
+
+| Language   | Module                                    | Signs? |
+|------------|-------------------------------------------|--------|
+| Python     | `minipae.py` (this repo)                  | yes    |
+| Rust       | `ifascript::nostr`, `zangbeto_enforcement::nostr_bridge` | yes |
+| TypeScript | `organism-core/bridge/nostr-wire.ts`      | no     |
+| Julia      | `OSOVM/src/nostr_bridge.jl`               | no     |
+| JavaScript | `Koodu/nostr-adapter.js`                  | no     |
+
+The "no" rows build canonical unsigned events for a key holder to sign —
+those components hold no agent keys and should not, since a second key for
+one agent is indistinguishable on the wire from a second agent.
+
+The TypeScript module is namespace-parameterised, so a TS organ passes its
+own prefix rather than forking it.
 
 ## Slug grammar is stricter than the namespace rule
 
