@@ -32,6 +32,7 @@ Env: NIPAE_NSEC (agent secret, hex or nsec), NIPAE_OWNER (owner pubkey hex,
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -42,6 +43,7 @@ import os
 import secrets
 import sys
 import time
+import urllib.parse
 
 # --------------------------------------------------------------------------
 # secp256k1 constants
@@ -508,6 +510,218 @@ def event_id(ev: dict) -> str:
     ], separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(serial.encode()).hexdigest()
 
+
+
+# --------------------------------------------------------------------------
+# NIP-46 remote signing (client side) + NIP-32 labels
+#
+# The point of NIP-46 is that the agent's secret key never enters the process
+# doing the work. An organ holds a throwaway CLIENT key used only to talk to
+# the bunker; the bunker holds the agent key and signs on request. If the organ
+# is compromised, the attacker gets a transport key and a revoked session, not
+# the agent's identity.
+#
+# Vantage already implements the signer side (backend/buzz_nip46.py, kind:24133,
+# with an explicit host approval step before it will sign anything). This is
+# the client that talks to it, so an organ can publish as the agent without
+# ever holding its key.
+# --------------------------------------------------------------------------
+
+KIND_NOSTR_CONNECT = 24133
+
+#: NIP-32 label namespace tag. `L` declares the namespace, `l` the value.
+TAG_LABEL_NAMESPACE = "L"
+TAG_LABEL = "l"
+
+
+def parse_bunker_uri(uri: str) -> dict:
+    """Parse `bunker://<pubkey-hex>?relay=wss://...&secret=...`.
+
+    Returns {"pubkey", "relays", "secret"}. Raises ValueError on anything that
+    is not a usable bunker URI -- a malformed one otherwise fails much later as
+    a silent timeout waiting for a signer that was never addressed.
+    """
+    if not uri.startswith("bunker://"):
+        raise ValueError(f"not a bunker URI: {uri!r}")
+
+    rest = uri[len("bunker://"):]
+    pubkey, _, query = rest.partition("?")
+    pubkey = pubkey.strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", pubkey):
+        raise ValueError("bunker URI must carry a 64-hex signer pubkey")
+
+    params = urllib.parse.parse_qs(query)
+    relays = params.get("relay", [])
+    if not relays:
+        raise ValueError("bunker URI must carry at least one relay= parameter")
+
+    return {
+        "pubkey": pubkey,
+        "relays": relays,
+        "secret": (params.get("secret") or [None])[0],
+    }
+
+
+def label_tags(namespace: str, *values: str) -> list:
+    """NIP-32 label tags: one `L` for the namespace, one `l` per value.
+
+    Labels are how a reader filters without parsing content -- a Zàngbétò
+    auditor can ask the relay for `osovm/receipt` events instead of pulling
+    every event and inspecting it.
+
+    The namespace goes on every `l` tag as its second element, per NIP-32, so a
+    value is never ambiguous about which vocabulary it belongs to.
+    """
+    if not namespace:
+        raise ValueError("a NIP-32 label needs a namespace")
+    if not values:
+        raise ValueError("a NIP-32 label needs at least one value")
+    tags = [[TAG_LABEL_NAMESPACE, namespace]]
+    tags.extend([TAG_LABEL, v, namespace] for v in values)
+    return tags
+
+
+class Nip46Client:
+    """Talks to a NIP-46 bunker so this process never holds the agent key.
+
+    `client_seckey` is a throwaway used only to encrypt the channel to the
+    bunker. It is NOT the agent identity and must not be reused as one --
+    events signed by the bunker carry the AGENT's pubkey, not this one.
+
+    Usage:
+
+        c = Nip46Client(bunker_uri, client_seckey)
+        await c.connect()
+        agent_pub = await c.get_public_key()
+        signed = await c.sign_event(unsigned_event)
+
+    The bunker may require a human approval per `sign_event` (Vantage's does,
+    with a 60s window), so a timeout here is a plausible normal outcome rather
+    than necessarily a fault -- it is surfaced as Nip46Timeout so a caller can
+    tell "nobody approved" from "the transport broke".
+    """
+
+    def __init__(self, bunker_uri: str, client_seckey: bytes, timeout: float = 75.0):
+        parsed = parse_bunker_uri(bunker_uri)
+        self.signer_pubkey = bytes.fromhex(parsed["pubkey"])
+        self.relay = parsed["relays"][0]
+        self.secret = parsed["secret"]
+        self.client_seckey = client_seckey
+        self.client_pubkey = pubkey_from_secret(int.from_bytes(client_seckey, "big"))
+        self.timeout = timeout
+        self._ck = conversation_key(client_seckey, self.signer_pubkey)
+
+    def _wrap(self, payload: dict) -> dict:
+        """Encrypt a request and wrap it in a kind:24133 event."""
+        return sign_event(
+            KIND_NOSTR_CONNECT,
+            nip44_encrypt(json.dumps(payload, separators=(",", ":"),
+                                     ensure_ascii=False), self._ck),
+            [["p", self.signer_pubkey.hex()]],
+            self.client_seckey,
+        )
+
+    def _unwrap(self, ev: dict) -> dict | None:
+        """Decrypt a kind:24133 response, or None if it is not for us."""
+        if ev.get("kind") != KIND_NOSTR_CONNECT:
+            return None
+        if ev.get("pubkey") != self.signer_pubkey.hex():
+            return None
+        try:
+            return json.loads(nip44_decrypt(ev.get("content", ""), self._ck))
+        except Exception:
+            # A response we cannot decrypt is not ours; ignoring beats raising,
+            # since a shared relay carries other sessions' traffic.
+            return None
+
+    async def _rpc(self, method: str, params: list) -> object:
+        """One request/response round trip against the bunker."""
+        req_id = secrets.token_hex(8)
+        request = self._wrap({"id": req_id, "method": method, "params": params})
+
+        async with websockets.connect(self.relay) as ws:
+            sub = "nip46-" + req_id
+            # Subscribe BEFORE publishing: a fast bunker can answer before a
+            # later subscription is established, and the reply would be missed.
+            await ws.send(json.dumps(["REQ", sub, {
+                "kinds": [KIND_NOSTR_CONNECT],
+                "authors": [self.signer_pubkey.hex()],
+                "#p": [self.client_pubkey.hex()],
+                "limit": 0,
+            }]))
+            await ws.send(json.dumps(["EVENT", request]))
+
+            deadline = time.time() + self.timeout
+            while time.time() < deadline:
+                remaining = deadline - time.time()
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                try:
+                    frame = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(frame, list) or frame[0] != "EVENT":
+                    continue
+
+                payload = self._unwrap(frame[2] if len(frame) > 2 else {})
+                if not payload or payload.get("id") != req_id:
+                    continue
+                if payload.get("error"):
+                    raise Nip46Error(f"{method}: {payload['error']}")
+                return payload.get("result")
+
+        raise Nip46Timeout(
+            f"{method}: no response from the bunker within {self.timeout}s. "
+            "If the bunker requires per-signature approval, nobody approved."
+        )
+
+    async def connect(self) -> str:
+        """Open a session. Sends the bunker's own secret if the URI carried one."""
+        params = [self.client_pubkey.hex()]
+        if self.secret:
+            params.append(self.secret)
+        return await self._rpc("connect", params)
+
+    async def ping(self) -> str:
+        return await self._rpc("ping", [])
+
+    async def get_public_key(self) -> str:
+        """The AGENT's pubkey -- what its events are attributed to."""
+        return await self._rpc("get_public_key", [])
+
+    async def sign_event(self, unsigned: dict) -> dict:
+        """Have the bunker sign an event with the agent's key.
+
+        `unsigned` is a NIP-01 event without `id`/`sig`. The bunker computes
+        both, so the returned event's pubkey is the AGENT's, not this client's.
+
+        The result is verified before it is returned: a bunker that hands back
+        an event whose id does not match its own fields, or whose signature
+        does not verify, has produced something that would be rejected at the
+        relay for reasons no error message would explain.
+        """
+        result = await self._rpc("sign_event", [
+            json.dumps(unsigned, separators=(",", ":"), ensure_ascii=False)
+        ])
+        signed = json.loads(result) if isinstance(result, str) else result
+
+        if signed.get("id") != event_id(signed):
+            raise Nip46Error("bunker returned an event whose id does not match its fields")
+        if not schnorr_verify(bytes.fromhex(signed["id"]),
+                              bytes.fromhex(signed["pubkey"]),
+                              bytes.fromhex(signed["sig"])):
+            raise Nip46Error("bunker returned an event whose signature does not verify")
+        return signed
+
+
+class Nip46Error(RuntimeError):
+    """The bunker refused, or answered with something unusable."""
+
+
+class Nip46Timeout(Nip46Error):
+    """No answer in time -- often means a required approval never came."""
 
 # --------------------------------------------------------------------------
 # relay client

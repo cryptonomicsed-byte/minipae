@@ -510,5 +510,116 @@ class TestAdapterKit(unittest.TestCase):
         self.assertNotEqual(tampered["id"], m.event_id(tampered))
 
 
+class TestBunkerUri(unittest.TestCase):
+    """A malformed bunker URI must fail here, not as a silent timeout later."""
+
+    GOOD = "bunker://" + "a" * 64 + "?relay=wss://r.example&secret=s1"
+
+    def test_parses_pubkey_relay_and_secret(self):
+        p = m.parse_bunker_uri(self.GOOD)
+        self.assertEqual(p["pubkey"], "a" * 64)
+        self.assertEqual(p["relays"], ["wss://r.example"])
+        self.assertEqual(p["secret"], "s1")
+
+    def test_secret_is_optional(self):
+        p = m.parse_bunker_uri("bunker://" + "b" * 64 + "?relay=wss://r.example")
+        self.assertIsNone(p["secret"])
+
+    def test_rejects_a_uri_with_no_relay(self):
+        # Without a relay there is nowhere to send the request, and the failure
+        # would otherwise look like a signer that never answered.
+        with self.assertRaises(ValueError):
+            m.parse_bunker_uri("bunker://" + "a" * 64)
+
+    def test_rejects_a_bad_pubkey(self):
+        with self.assertRaises(ValueError):
+            m.parse_bunker_uri("bunker://nothex?relay=wss://r.example")
+        with self.assertRaises(ValueError):
+            m.parse_bunker_uri("bunker://" + "a" * 63 + "?relay=wss://r.example")
+
+    def test_rejects_a_non_bunker_scheme(self):
+        with self.assertRaises(ValueError):
+            m.parse_bunker_uri("https://example.com")
+
+
+class TestNip46Client(unittest.TestCase):
+    """The client's own invariants, without a live bunker."""
+
+    URI = "bunker://" + "a" * 64 + "?relay=wss://r.example&secret=s1"
+
+    def setUp(self):
+        self.client_sk = bytes([0x55]) * 32
+        # The signer pubkey in the URI must be a real curve point for the
+        # conversation key to derive, so use a derived one.
+        signer = m.pubkey_from_secret(int.from_bytes(bytes([0x66]) * 32, "big"))
+        self.uri = f"bunker://{signer.hex()}?relay=wss://r.example&secret=s1"
+        self.c = m.Nip46Client(self.uri, self.client_sk)
+
+    def test_client_key_is_not_the_agent_identity(self):
+        # The whole point of NIP-46: this process holds a transport key only.
+        # Confusing it for the agent key would attribute events to the wrong
+        # pubkey, which on the wire is a different agent entirely.
+        self.assertEqual(
+            self.c.client_pubkey,
+            m.pubkey_from_secret(int.from_bytes(self.client_sk, "big")),
+        )
+        self.assertNotEqual(self.c.client_pubkey, self.c.signer_pubkey)
+
+    def test_requests_are_encrypted_and_addressed_to_the_signer(self):
+        ev = self.c._wrap({"id": "x", "method": "ping", "params": []})
+        self.assertEqual(ev["kind"], m.KIND_NOSTR_CONNECT)
+        self.assertIn(["p", self.c.signer_pubkey.hex()], ev["tags"])
+        # The method name must not be readable on the wire.
+        self.assertNotIn("ping", ev["content"])
+        # ...but must round-trip under the conversation key.
+        back = json.loads(m.nip44_decrypt(ev["content"], self.c._ck))
+        self.assertEqual(back["method"], "ping")
+
+    def test_a_response_from_the_wrong_author_is_ignored(self):
+        # A shared relay carries other sessions' traffic; picking up someone
+        # else's reply would be worse than missing our own.
+        impostor_sk = bytes([0x77]) * 32
+        ck = m.conversation_key(impostor_sk, self.c.client_pubkey)
+        ev = m.sign_event(
+            m.KIND_NOSTR_CONNECT,
+            m.nip44_encrypt(json.dumps({"id": "x", "result": "pong"}), ck),
+            [["p", self.c.client_pubkey.hex()]],
+            impostor_sk,
+        )
+        self.assertIsNone(self.c._unwrap(ev))
+
+    def test_an_undecryptable_response_is_ignored_not_raised(self):
+        ev = m.sign_event(m.KIND_NOSTR_CONNECT, "not-ciphertext",
+                          [], bytes([0x66]) * 32)
+        self.assertIsNone(self.c._unwrap(ev))
+
+    def test_a_wrong_kind_is_ignored(self):
+        ev = m.sign_event(1, "hi", [], bytes([0x66]) * 32)
+        self.assertIsNone(self.c._unwrap(ev))
+
+
+class TestNip32Labels(unittest.TestCase):
+    def test_namespace_is_declared_once_and_carried_on_each_value(self):
+        # Per NIP-32: `L` declares the namespace, and each `l` repeats it so a
+        # value is never ambiguous about which vocabulary it belongs to.
+        tags = m.label_tags("osovm/receipt", "status/valid", "status/pending")
+        self.assertEqual(tags[0], ["L", "osovm/receipt"])
+        self.assertEqual(tags[1], ["l", "status/valid", "osovm/receipt"])
+        self.assertEqual(tags[2], ["l", "status/pending", "osovm/receipt"])
+
+    def test_labels_survive_onto_a_signed_event(self):
+        sk = bytes([0x88]) * 32
+        ev = m.sign_event(47001, "{}", m.label_tags("zangbeto/attestation",
+                                                    "status/slashed"), sk)
+        self.assertIn(["L", "zangbeto/attestation"], ev["tags"])
+        self.assertEqual(ev["id"], m.event_id(ev))
+
+    def test_a_label_without_a_namespace_or_value_is_refused(self):
+        with self.assertRaises(ValueError):
+            m.label_tags("", "x")
+        with self.assertRaises(ValueError):
+            m.label_tags("ns")
+
+
 if __name__ == "__main__":
     unittest.main()
