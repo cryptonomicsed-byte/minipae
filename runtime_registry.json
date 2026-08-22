@@ -101,6 +101,28 @@
         "notes": "15/15 entries verified live on wss://relay.primal.net (damus was HTTP 503 at verification time)" }
     },
     {
+      "runtime_id": "triune-memory",
+      "name": "Triune Memory",
+      "layer": "3-execute",
+      "kind": "orchestrator",
+      "status": "planned",
+      "identity": {
+        "runtime_id_fields": ["agentId"],
+        "nsec_path": "m/44'/30174'/<agent>'/<owner>' - NOT YET PROVISIONED",
+        "agent_pubkey_ref": null,
+        "notes": "Real, tested NIP-AE wire code already exists (src/nostr-wire.ts, via organism-core/bridge/nostr-wire, the canonical TypeScript wire implementation) and builds valid unsigned kind:30174 engrams -- but it holds no agent key by design (organism-core's TS module is one of the 'no-sign' implementations per this repo's own NAMESPACES.md) and is not yet called from orchestrator.ts/cli.ts/adapters.ts, so nothing publishes today. Open identity question, same shape as the OpenClaw entry above: Triune-Memory mirrors an existing Omo-Koda2 agentId 1:1 via SSE subscription (docs/OSO_INTEGRATION_PLAN.md) -- should it sign under that SAME agent's already-derived minipae key (Omo-Koda2's sealed vault would have to hand out a signature or a scoped delegation, not the raw key), or get its own sibling BIPON39-derived key as a distinct producer? Not decided -- surfaced, not silently bridged, matching the Iranti/Vantage-vault and Bondhive standalone-with-gate precedents."
+      },
+      "credentials": [],
+      "hosts": [],
+      "namespaces": ["mem/triune/*"],
+      "provenance": { "source": "triune-memory", "source_version": null },
+      "adapter": "src/nostr-wire.ts (builds unsigned engrams only; no publish path wired yet)",
+      "owner_pane": "w13",
+      "registered_at": null,
+      "verified": { "health": false, "engram_roundtrip": false, "last_check": null,
+        "notes": "2026-08-22: confirmed real via source read -- buildEngram/buildSlug/KIND_AGENT_ENGRAM exist and are unit-tested (test/nostr-wire.test.mjs), but no caller in the orchestrator pipeline and no signer, so mem/triune/* has never had a real engram on the wire. Blocked on the identity decision above, not on missing code." }
+    },
+    {
       "runtime_id": "openclaw",
       "name": "OpenClaw",
       "layer": "3-execute",
