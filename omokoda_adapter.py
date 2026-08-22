@@ -97,12 +97,20 @@ def push(sk: bytes, owner: bytes, relay: str, omokoda_url: str, agent_id: str | 
             # Full GlyphNode metadata (no plaintext memory content crosses
             # this boundary, matching Omo-Koda2's own sealed-vault design) --
             # every field GlyphNode needs so pull() can round-trip it back
-            # into a real merge without recomputing glyph/odu derivations.
+            # into a real merge without recomputing glyph/seed derivations.
+            # Universal wording on the wire (OSOVM_CODEX §42, locked
+            # 2026-08-22): Omo-Koda2's own GlyphNode struct names these
+            # fields odu_base/odu_composed internally, but any minipae
+            # client reading this engram is an external, user-facing
+            # surface -- translated to seed_base/seed_composed here
+            # (Odù -> Signature/Seed per the locked mapping). pull()
+            # translates back before calling Omo-Koda2's own merge API,
+            # which still requires the real odu_base/odu_composed names.
             "value": json.dumps({
                 "canonical_id": canonical_id,
                 "glyph": node.get("glyph"),
-                "odu_base": node.get("odu_base"),
-                "odu_composed": node.get("odu_composed"),
+                "seed_base": node.get("odu_base"),
+                "seed_composed": node.get("odu_composed"),
                 "ts": node.get("ts"),
                 "tags": node.get("tags", []),
                 "walrus_blob_id": node.get("walrus_blob_id"),
@@ -143,7 +151,10 @@ def pull(sk: bytes, owner: bytes, relay: str, omokoda_url: str, agent_id: str | 
     # larql_glyph::GlyphGraph deserializes {"nodes": {canonical_id: GlyphNode},
     # "edges": [...]} -- nodes must be a map keyed by canonical_id with every
     # GlyphNode field present (glyph/odu_base/odu_composed/ts/tags/
-    # walrus_blob_id), same shape push() reads back out below.
+    # walrus_blob_id), same shape push() reads back out below. The engram
+    # itself carries the universal seed_base/seed_composed names (see
+    # push()); translated back to odu_base/odu_composed here because that's
+    # what Omo-Koda2's own merge API (Rust GlyphNode struct) requires.
     nodes: dict = {}
     for dtag, ev in heads.items():
         try:
@@ -165,8 +176,8 @@ def pull(sk: bytes, owner: bytes, relay: str, omokoda_url: str, agent_id: str | 
         nodes[canonical_id] = {
             "canonical_id": canonical_id,
             "glyph": payload.get("glyph"),
-            "odu_base": payload.get("odu_base"),
-            "odu_composed": payload.get("odu_composed"),
+            "odu_base": payload.get("seed_base"),
+            "odu_composed": payload.get("seed_composed"),
             "ts": payload.get("ts"),
             "tags": payload.get("tags", []),
             "walrus_blob_id": payload.get("walrus_blob_id"),
