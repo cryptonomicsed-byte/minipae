@@ -32,6 +32,8 @@ per the locked plan).
 | `mem/organism/*`| organism-core bridge/breath state          | active   |
 | `mem/mycelium/*`| Mycelium stigmergic traces and findings    | planned  |
 | `mem/waggle/*`  | Waggle field signals (Agentic)             | planned  |
+| `mem/omokoda/*` | Omo-Koda2 GlyphIndex bridge (omokoda_adapter.py) | active |
+| `mem/iranti/*`  | Ìrántí native memory mesh (bridge.rs)      | active   |
 | `mem/loom/*`    | Loom agent-collaboration pool              | planned  |
 | `mem/triune/*`  | Triune-Memory orchestrator phase state     | planned  |
 | `mem/phone/*`   | agent-phone identity binding, voicemail    | planned  |

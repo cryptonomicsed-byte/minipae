@@ -2,6 +2,33 @@
   "schema": "runtime-registry/v1",
   "entries": [
     {
+      "runtime_id": "iranti",
+      "name": "Ìrántí",
+      "layer": "3-execute",
+      "kind": "memory-mesh",
+      "status": "active",
+      "identity": {
+        "runtime_id_fields": ["pubkey"],
+        "nsec_path": "N/A -- independently generated, not a BIPON39-derived sibling",
+        "agent_pubkey_ref": "agents.id (pubkey), agents.sk (nsec), local SQLite store",
+        "notes": "Unlike Omo-Koda2/OpenClaw, Ìrántí is not reconciling a foreign identity root against minipae's derivation -- crates/iranti-core/src/store.rs::birth() calls nostr::Keys::generate() directly, minting a fresh native secp256k1/Nostr keypair as the agent's ONE identity, same shape as genteam-daemon/hermes's independent-nsec1 pattern already in this registry. No root-sharing question applies."
+      },
+      "credentials": [
+        { "type": "nsec1", "ref": "agents.sk column", "storage": "local SQLite store (~/.iranti or IRANTI_STORE), plaintext in the prototype per Ìrántí's own docs/security.md -- production hardening (TEE/HSM) flagged there, not yet done" }
+      ],
+      "hosts": [
+        { "host_id": "local-cli", "endpoint": "iranti CLI (birth/write/recall/bridge/daemon)", "transport": "local + relay HTTP", "health": "iranti status" },
+        { "host_id": "a2a-daemon", "endpoint": "iranti daemon --port 38400", "transport": "HTTP RPC", "health": "GET /status" }
+      ],
+      "namespaces": ["mem/iranti/*"],
+      "provenance": { "source": "iranti", "source_version": null },
+      "adapter": "crates/iranti-core/src/bridge.rs (native producer, not a translation adapter)",
+      "owner_pane": "w13",
+      "registered_at": "2026-08-22T00:00:00Z",
+      "verified": { "health": false, "engram_roundtrip": true, "last_check": "2026-08-22T00:00:00Z",
+        "notes": "Stronger baseline than most entries here: Ìrántí IS a first-class NIP-AE producer/consumer natively (crypto.rs defines KIND_AGENT_ENGRAM=30174 plus companion kinds 36000-36003; bridge.rs's push()/pull() build and verify real signed kind:30174 events against any relay, unit-tested). This is source-confirmed, not yet re-run live against a public relay this session the way the omokoda/vantage bridge was -- engram_roundtrip reflects the existing tested code path, not a fresh live run; health:false until that live run happens." }
+    },
+    {
       "runtime_id": "genteam-daemon",
       "name": "GenTeam daemon",
       "layer": "3-execute",
