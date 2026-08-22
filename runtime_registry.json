@@ -45,6 +45,32 @@
       "verified": { "health": true, "engram_roundtrip": true, "cross_relay": true, "last_check": "2026-08-14T00:00:00Z" }
     },
     {
+      "runtime_id": "omokoda",
+      "name": "Omo-Koda2",
+      "layer": "3-execute",
+      "kind": "agent-kernel",
+      "status": "active",
+      "identity": {
+        "runtime_id_fields": ["agent_name"],
+        "nsec_path": "m/44'/30174'/<agent_index>'/<owner_index>'",
+        "agent_pubkey_ref": "PrivateSessionData.minipae_npub (sealed vault, per agent)",
+        "notes": "sibling derivation from the same BIPON39 mnemonic every agent gets at birth (not a second unrelated key) -- resolves the root-sharing blocker this entry was waiting on. agent_index = minipae_index_for(agent_name) (first 4 bytes of sha256(name), masked to 31 bits); owner_index=0 (self-owned) until a real owner reconciliation policy exists. See omokoda-core/src/identity/wallet.rs::derive_minipae_key, wired into Steward::birth()."
+      },
+      "credentials": [
+        { "type": "nsec1", "ref": "minipae_private_key_hex, sealed inside PrivateSessionData (same self-seal boundary as the agent's Sui/Eth/Nostr keys)", "storage": "Omo-Koda2's own sealed session vault" }
+      ],
+      "hosts": [
+        { "host_id": "local", "endpoint": "http://127.0.0.1:8787 (OMOKODA_URL)", "transport": "REST", "health": "GET /v1/health" }
+      ],
+      "namespaces": ["mem/omokoda/*"],
+      "provenance": { "source": "omokoda", "source_version": "glyphindex/v1" },
+      "adapter": "omokoda_adapter.py",
+      "owner_pane": "w13",
+      "registered_at": "2026-08-21T00:00:00Z",
+      "verified": { "health": false, "engram_roundtrip": false, "last_check": null,
+        "notes": "identity derivation landed and unit-tested (commit 5b4436a on Omo-Koda2); adapter written against the real GET /v1/vault/glyph + POST /v1/vault/glyph/merge contract but not yet run against a live kernel instance this session -- run `omokoda_adapter.py sync` with NIPAE_NSEC set to a birthed agent's minipae_private_key_hex to get a first live verification." }
+    },
+    {
       "runtime_id": "hermes",
       "name": "Hermes Agent",
       "layer": "3-execute",
