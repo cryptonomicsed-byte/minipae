@@ -2,6 +2,54 @@
   "schema": "runtime-registry/v1",
   "entries": [
     {
+      "runtime_id": "mycelium",
+      "name": "Mycelium",
+      "layer": "3-execute",
+      "kind": "trace-substrate",
+      "status": "active",
+      "identity": {
+        "runtime_id_fields": ["owner_pubkey"],
+        "nsec_path": "N/A -- operator-supplied, not derived",
+        "agent_pubkey_ref": "NOSTR_SECKEY env var, or ~/.hermes/credential_vault.json[\"nostr\"] fallback",
+        "notes": "No birth/derivation flow of its own -- mycelium/publish.py::_nostr_env() expects an externally-provisioned key (env first, Hermes's credential vault as fallback), same external-key-management shape as genteam-daemon's advisory above. Whichever key is configured IS the identity; no reconciliation question."
+      },
+      "credentials": [
+        { "type": "nsec1", "ref": "NOSTR_SECKEY", "storage": "env var or ~/.hermes/credential_vault.json" }
+      ],
+      "hosts": [
+        { "host_id": "local-cli", "endpoint": "python3 -m mycelium.cli publish", "transport": "local + relay HTTP", "health": "n/a" }
+      ],
+      "namespaces": ["mem/mycelium/*"],
+      "provenance": { "source": "mycelium", "source_version": null },
+      "adapter": "mycelium/nostr_wire.py + mycelium/publish.py::nostr_publish() (delegates to minipae.py directly, real wired CLI path via `cmd_publish`)",
+      "owner_pane": "w13",
+      "registered_at": "2026-08-22T00:00:00Z",
+      "verified": { "health": false, "engram_roundtrip": false, "last_check": "2026-08-22T00:00:00Z",
+        "notes": "Source-confirmed real and wired (not a stub): nostr_publish() is called from publish() which is called from cli.py's real `publish` subcommand, idempotent via a local published-id set so cron re-runs don't flood the relay. Each finding travels twice on purpose -- as a private kind:30174 engram AND as a checkable kind:47001 Crucible claim. Not yet exercised live this session (needs NOSTR_SECKEY/NOSTR_RELAY provisioned) -- engram_roundtrip:false reflects 'not run live here', not 'code doesn't work'." }
+    },
+    {
+      "runtime_id": "waggle",
+      "name": "Waggle (Agentic)",
+      "layer": "3-execute",
+      "kind": "coordination-substrate",
+      "status": "planned",
+      "identity": {
+        "runtime_id_fields": ["owner_pubkey"],
+        "nsec_path": "N/A -- would be operator-supplied like mycelium, not derived",
+        "agent_pubkey_ref": null,
+        "notes": "Same external-key shape as mycelium (no derivation flow), but unlike mycelium's publish(), nothing in Agentic's own CLI/MCP/Go server calls publish_signal() -- only its own test file imports it. Real, tested, unwired library, not a live path yet."
+      },
+      "credentials": [],
+      "hosts": [],
+      "namespaces": ["mem/waggle/*"],
+      "provenance": { "source": "waggle", "source_version": null },
+      "adapter": "sdk/python/waggle_nostr.py (publish_signal(), tested in test_waggle_nostr.py -- no caller)",
+      "owner_pane": "w13",
+      "registered_at": null,
+      "verified": { "health": false, "engram_roundtrip": false, "last_check": null,
+        "notes": "2026-08-22: confirmed real via source read -- same engram-vs-Crucible-claim design as mycelium's nostr_wire.py (assertive kinds gold/dead-end/warn go out as checkable kind:47001 claims, factual kinds explored/claim/handoff/help as engrams only). Blocked on integration (a caller), not on missing design or missing code." }
+    },
+    {
       "runtime_id": "iranti",
       "name": "Ìrántí",
       "layer": "3-execute",

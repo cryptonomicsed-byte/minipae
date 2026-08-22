@@ -30,7 +30,7 @@ per the locked plan).
 | `mem/koodu/*`   | Kóòdù gate decisions (unsigned events)    | active   |
 | `mem/osovm/*`   | Ọ̀ṢỌ́VM job execution results               | active   |
 | `mem/organism/*`| organism-core bridge/breath state          | active   |
-| `mem/mycelium/*`| Mycelium stigmergic traces and findings    | planned  |
+| `mem/mycelium/*`| Mycelium stigmergic traces and findings    | active   |
 | `mem/waggle/*`  | Waggle field signals (Agentic)             | planned  |
 | `mem/omokoda/*` | Omo-Koda2 GlyphIndex bridge (omokoda_adapter.py) | active |
 | `mem/iranti/*`  | Ìrántí native memory mesh (bridge.rs)      | active   |
