@@ -24,8 +24,8 @@
       "adapter": "mycelium/nostr_wire.py + mycelium/publish.py::nostr_publish() (delegates to minipae.py directly, real wired CLI path via `cmd_publish`)",
       "owner_pane": "w13",
       "registered_at": "2026-08-22T00:00:00Z",
-      "verified": { "health": false, "engram_roundtrip": false, "last_check": "2026-08-22T00:00:00Z",
-        "notes": "Source-confirmed real and wired (not a stub): nostr_publish() is called from publish() which is called from cli.py's real `publish` subcommand, idempotent via a local published-id set so cron re-runs don't flood the relay. Each finding travels twice on purpose -- as a private kind:30174 engram AND as a checkable kind:47001 Crucible claim. Not yet exercised live this session (needs NOSTR_SECKEY/NOSTR_RELAY provisioned) -- engram_roundtrip:false reflects 'not run live here', not 'code doesn't work'." }
+      "verified": { "health": true, "engram_roundtrip": true, "last_check": "2026-08-23T00:00:00Z",
+        "notes": "2026-08-23 live run, clean pass: generated a throwaway keypair, called nostr_wire.publish_finding() directly against wss://relay.primal.net with a real finding dict -- relay returned {'ok': True} (WebSocket publish via minipae.publish, not the broken HTTP path Ìrántí's bridge uses). Then queried the same relay via minipae.query() and decoded the engram back with the same key: content matched exactly what was published, byte for byte. Both directions genuinely proven against real public infrastructure, not source-confidence. This was a direct nostr_wire.publish_finding() call, not through cli.py's `publish` subcommand (which additionally needs a populated findings DB + NOSTR_SECKEY/NOSTR_RELAY env) -- the wire mechanism itself is what's proven here." }
     },
     {
       "runtime_id": "waggle",
@@ -73,8 +73,8 @@
       "adapter": "crates/iranti-core/src/bridge.rs (native producer, not a translation adapter)",
       "owner_pane": "w13",
       "registered_at": "2026-08-22T00:00:00Z",
-      "verified": { "health": false, "engram_roundtrip": true, "last_check": "2026-08-22T00:00:00Z",
-        "notes": "Stronger baseline than most entries here: Ìrántí IS a first-class NIP-AE producer/consumer natively (crypto.rs defines KIND_AGENT_ENGRAM=30174 plus companion kinds 36000-36003; bridge.rs's push()/pull() build and verify real signed kind:30174 events against any relay, unit-tested). This is source-confirmed, not yet re-run live against a public relay this session the way the omokoda/vantage bridge was -- engram_roundtrip reflects the existing tested code path, not a fresh live run; health:false until that live run happens." }
+      "verified": { "health": true, "engram_roundtrip": false, "last_check": "2026-08-23T00:00:00Z",
+        "notes": "2026-08-23 live run, mixed real result: `iranti bridge push` genuinely works -- built the real release binary, birthed two agents, wrote a memory, pushed it as a real signed kind:30174 engram to both https://relay.damus.io and https://relay.primal.net, both accepted it (HTTP POST /events, real success responses). `iranti bridge pull` does NOT work against either -- POST /query on both relays returns HTTP 200 with the relay's HTML info page, not a Nostr REQ response (confirmed independently via raw curl, not a client bug). bridge.rs's RelayClient assumes a plain-HTTP NIP-01 query surface that mainstream public relays don't actually serve -- only WebSocket REQ is real support out there. This is a genuine limitation in Ìrántí's bridge transport, not fixed here (out of this audit's scope -- flagging for whoever owns bridge.rs). engram_roundtrip:false reflects push-only; health:true because push, the write path, is proven live." }
     },
     {
       "runtime_id": "genteam-daemon",
