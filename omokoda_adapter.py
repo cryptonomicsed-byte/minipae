@@ -79,7 +79,8 @@ def slug_for(canonical_id: str) -> str:
 
 
 def push(sk: bytes, owner: bytes, relay: str, omokoda_url: str, agent_id: str | None) -> int:
-    import asyncio
+    """Push all glyph nodes from Omo-Koda2 to Nostr via batch_set."""
+    from minipae import NipaeClient
     graph = _get_json(f"{omokoda_url}/v1/vault/glyph", agent_id)
     # larql_glyph::GlyphGraph serializes as {"nodes": {canonical_id: GlyphNode},
     # "edges": [GlyphEdge, ...]} -- nodes is a map keyed by canonical_id, not
@@ -87,34 +88,35 @@ def push(sk: bytes, owner: bytes, relay: str, omokoda_url: str, agent_id: str | 
     nodes = graph.get("nodes", {})
     agent_pub = m.pubkey_from_secret(int.from_bytes(sk, "big")).hex()
     now = int(time.time())
-    published = 0
+
+    # Build the batch of (slug, value) pairs, skipping invalid slugs.
+    # Full GlyphNode metadata (no plaintext memory content crosses
+    # this boundary, matching Omo-Koda2's own sealed-vault design) --
+    # every field GlyphNode needs so pull() can round-trip it back
+    # into a real merge without recomputing glyph/seed derivations.
+    # Universal wording on the wire (OSOVM_CODEX §42, locked
+    # 2026-08-22): Omo-Koda2's own GlyphNode struct names these
+    # fields odu_base/odu_composed internally, but any minipae
+    # client reading this engram is an external, user-facing
+    # surface -- translated to seed_base/seed_composed here
+    # (Odù -> Signature/Seed per the locked mapping). pull()
+    # translates back before calling Omo-Koda2's own merge API,
+    # which still requires the real odu_base/odu_composed names.
+    entries: list[tuple[str, str]] = []
+    skipped = 0
     for canonical_id, node in nodes.items():
         slug = slug_for(canonical_id)
         if not m.validate_slug(slug):
+            skipped += 1
             continue
-        body = {
-            "slug": slug,
-            # Full GlyphNode metadata (no plaintext memory content crosses
-            # this boundary, matching Omo-Koda2's own sealed-vault design) --
-            # every field GlyphNode needs so pull() can round-trip it back
-            # into a real merge without recomputing glyph/seed derivations.
-            # Universal wording on the wire (OSOVM_CODEX §42, locked
-            # 2026-08-22): Omo-Koda2's own GlyphNode struct names these
-            # fields odu_base/odu_composed internally, but any minipae
-            # client reading this engram is an external, user-facing
-            # surface -- translated to seed_base/seed_composed here
-            # (Odù -> Signature/Seed per the locked mapping). pull()
-            # translates back before calling Omo-Koda2's own merge API,
-            # which still requires the real odu_base/odu_composed names.
-            "value": json.dumps({
-                "canonical_id": canonical_id,
-                "glyph": node.get("glyph"),
-                "seed_base": node.get("odu_base"),
-                "seed_composed": node.get("odu_composed"),
-                "ts": node.get("ts"),
-                "tags": node.get("tags", []),
-                "walrus_blob_id": node.get("walrus_blob_id"),
-            }),
+        value = json.dumps({
+            "canonical_id": canonical_id,
+            "glyph": node.get("glyph"),
+            "seed_base": node.get("odu_base"),
+            "seed_composed": node.get("odu_composed"),
+            "ts": node.get("ts"),
+            "tags": node.get("tags", []),
+            "walrus_blob_id": node.get("walrus_blob_id"),
             "provenance": {
                 "schema": "nip-ae-provenance/v1",
                 "source": "omokoda",
@@ -123,21 +125,18 @@ def push(sk: bytes, owner: bytes, relay: str, omokoda_url: str, agent_id: str | 
                 "created_at": now,
                 "key": canonical_id,
             },
-        }
-        ev = m.build_event(slug, body, sk, owner)
-        for attempt in range(3):
-            try:
-                res = asyncio.run(m.publish(relay, ev))
-                if res.get("ok"):
-                    published += 1
-                    print(f"  pushed {slug}", flush=True)
-                break
-            except Exception as e:
-                if attempt == 2:
-                    print(f"  FAIL {slug}: {type(e).__name__}", flush=True)
-                else:
-                    time.sleep(2 * (attempt + 1))
-    print(f"[omokoda-adapter] push: {published}/{len(nodes)} glyph nodes published")
+        })
+        entries.append((slug, value))
+
+    if not entries:
+        print(f"[omokoda-adapter] push: no valid glyph nodes to publish (skipped={skipped})")
+        return 0
+
+    client = NipaeClient(seckey=sk, owner_pubkey=owner)
+    results = client.batch_set(entries)
+    published = sum(1 for ok in results if ok)
+    print(f"[omokoda-adapter] push: {published}/{len(entries)} glyph nodes published"
+          f" (skipped={skipped})")
     return published
 
 
@@ -196,6 +195,155 @@ def pull(sk: bytes, owner: bytes, relay: str, omokoda_url: str, agent_id: str | 
     return len(nodes)
 
 
+def pull_glyphs(sk: bytes, owner: bytes, relays: list[str], since_ts: float = 0.0) -> list[dict]:
+    """Fetch glyph engrams from Nostr since *since_ts* (Unix timestamp).
+
+    Queries all relays in parallel and returns a list of decoded glyph-node
+    dicts (the parsed payload inside each engram), deduplicated by
+    canonical_id, with the most-recently-published copy winning.
+
+    If *since_ts* is 0.0 (the default), all available engrams are returned.
+    Callers can pass ``NipaeClient.get_sync_cursor()`` to resume from the
+    last known good checkpoint.
+    """
+    import asyncio
+    kc = m.conversation_key(sk, owner)
+    agent_pub = m.pubkey_from_secret(int.from_bytes(sk, "big")).hex()
+    since_int = int(since_ts) if since_ts > 0 else None
+    events = asyncio.run(m.query_multi(relays, [agent_pub], since=since_int))
+    heads = m.select_heads(events, kc)
+
+    glyphs: dict[str, dict] = {}  # canonical_id -> payload
+    for dtag, ev in heads.items():
+        try:
+            body = m.decode_body(ev, kc)
+        except Exception:
+            continue
+        slug = body.get("slug", "")
+        if not slug.startswith("mem/omokoda/glyph/"):
+            continue
+        if body.get("value") is None:
+            continue  # tombstoned
+        try:
+            payload = json.loads(body["value"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        canonical_id = payload.get("canonical_id")
+        if not canonical_id:
+            continue
+        existing = glyphs.get(canonical_id)
+        ev_ts = ev.get("created_at", 0)
+        if existing is None or ev_ts > existing.get("_ev_created_at", 0):
+            payload["_ev_created_at"] = ev_ts
+            glyphs[canonical_id] = payload
+
+    # Strip the internal sort key before returning
+    result = []
+    for payload in glyphs.values():
+        payload.pop("_ev_created_at", None)
+        result.append(payload)
+    return result
+
+
+def sync_glyphs(
+    sk: bytes,
+    owner: bytes,
+    relay: str,
+    relays: list[str],
+    omokoda_url: str,
+    agent_id: str | None,
+    index_snapshot: dict,
+) -> dict:
+    """Push new local glyph entries to Nostr and pull remote entries back.
+
+    *index_snapshot* is a dict mapping canonical_id -> GlyphNode (the same
+    shape returned by GET /v1/vault/glyph's "nodes" field).
+
+    Steps:
+      1. Read the sync cursor to know where we last left off.
+      2. Push entries from *index_snapshot* whose canonical_id is not
+         already published (checked by slug presence).
+      3. Pull remote engrams published since the cursor; merge any that are
+         not in *index_snapshot* into Omo-Koda2 via the merge endpoint.
+      4. Advance the cursor to now.
+
+    Returns {"pushed": N, "pulled": M, "errors": K}.
+    """
+    from minipae import NipaeClient
+    client = NipaeClient(seckey=sk, owner_pubkey=owner)
+    cursor_ts = client.get_sync_cursor()
+
+    agent_pub = m.pubkey_from_secret(int.from_bytes(sk, "big")).hex()
+    now = int(time.time())
+
+    # --- Phase 1: push new local entries ---
+    push_entries: list[tuple[str, str]] = []
+    for canonical_id, node in index_snapshot.items():
+        slug = slug_for(canonical_id)
+        if not m.validate_slug(slug):
+            continue
+        value = json.dumps({
+            "canonical_id": canonical_id,
+            "glyph": node.get("glyph"),
+            "seed_base": node.get("odu_base"),
+            "seed_composed": node.get("odu_composed"),
+            "ts": node.get("ts"),
+            "tags": node.get("tags", []),
+            "walrus_blob_id": node.get("walrus_blob_id"),
+            "provenance": {
+                "schema": "nip-ae-provenance/v1",
+                "source": "omokoda",
+                "source_version": "glyphindex/v1",
+                "created_by": agent_pub,
+                "created_at": now,
+                "key": canonical_id,
+            },
+        })
+        push_entries.append((slug, value))
+
+    push_results = client.batch_set(push_entries) if push_entries else []
+    pushed = sum(1 for ok in push_results if ok)
+    errors = sum(1 for ok in push_results if not ok)
+
+    # --- Phase 2: pull remote entries not in local index ---
+    remote_glyphs = pull_glyphs(sk, owner, relays, since_ts=cursor_ts)
+    new_remote = [g for g in remote_glyphs if g.get("canonical_id") not in index_snapshot]
+
+    pulled = 0
+    if new_remote:
+        # Re-map seed_* names back to odu_* for Omo-Koda2's merge API
+        merge_nodes: dict = {}
+        for payload in new_remote:
+            cid = payload.get("canonical_id")
+            if cid:
+                merge_nodes[cid] = {
+                    "canonical_id": cid,
+                    "glyph": payload.get("glyph"),
+                    "odu_base": payload.get("seed_base"),
+                    "odu_composed": payload.get("seed_composed"),
+                    "ts": payload.get("ts"),
+                    "tags": payload.get("tags", []),
+                    "walrus_blob_id": payload.get("walrus_blob_id"),
+                }
+        try:
+            result = _post_json(
+                f"{omokoda_url}/v1/vault/glyph/merge",
+                {"nodes": merge_nodes, "edges": []},
+                agent_id,
+            )
+            pulled = len(merge_nodes)
+            print(f"[omokoda-adapter] sync: pulled {pulled} remote glyph(s) into merge")
+        except Exception as exc:
+            print(f"[omokoda-adapter] sync: merge FAILED: {type(exc).__name__}: {exc}")
+            errors += len(merge_nodes)
+
+    # --- Phase 3: advance cursor ---
+    client.set_sync_cursor(float(now))
+
+    print(f"[omokoda-adapter] sync: pushed={pushed} pulled={pulled} errors={errors}")
+    return {"pushed": pushed, "pulled": pulled, "errors": errors}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", nargs="?", default="sync", choices=["push", "pull", "sync"])
@@ -211,7 +359,9 @@ def main():
     sk = bytes.fromhex(nsec)
     owner_hex = os.environ.get("NIPAE_OWNER", "").strip()
     owner = bytes.fromhex(owner_hex) if owner_hex else m.pubkey_from_secret(int.from_bytes(sk, "big"))
-    relay = os.environ.get("NIPAE_RELAY", "wss://relay.damus.io")
+    # Multi-relay support: NIPAE_RELAYS wins over NIPAE_RELAY
+    relays = m._load_relays()
+    relay = relays[0]  # legacy single-relay path for push/pull
     omokoda_url = os.environ.get("OMOKODA_URL", "http://127.0.0.1:8787").rstrip("/")
 
     if args.mode in ("push", "sync"):

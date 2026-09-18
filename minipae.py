@@ -347,6 +347,11 @@ SLUG_RE_PREFIX = "mem/"
 def validate_slug(slug: str) -> bool:
     if slug == CORE_SLUG:
         return True
+    # sys/* slugs are reserved for internal protocol use (e.g. sys/sync_cursor)
+    if slug.startswith("sys/") and len(slug) <= 255:
+        rest = slug[4:]
+        if rest and all(c in "abcdefghijklmnopqrstuvwxyz0123456789_-/" for c in rest):
+            return True
     if len(slug.encode()) > 255:
         return False
     if not slug.startswith(SLUG_RE_PREFIX):
@@ -1133,6 +1138,167 @@ def select_heads(events: list[dict], kc: bytes) -> dict[str, dict]:
 
 def decode_body(ev: dict, kc: bytes) -> dict:
     return json.loads(nip44_decrypt(ev["content"], kc))
+
+
+# --------------------------------------------------------------------------
+# NipaeClient — high-level API for programmatic callers
+# --------------------------------------------------------------------------
+
+SYNC_CURSOR_SLUG = "sys/sync_cursor"
+
+
+def _load_relays(default_relay: str | None = None) -> list[str]:
+    """Read NIPAE_RELAYS (comma-separated) if set, else fall back to NIPAE_RELAY
+    or the supplied default.  Never returns an empty list."""
+    env_multi = os.environ.get("NIPAE_RELAYS", "").strip()
+    if env_multi:
+        parsed = [r.strip() for r in env_multi.split(",") if r.strip()]
+        if parsed:
+            return parsed
+    single = os.environ.get("NIPAE_RELAY", "").strip() or default_relay or "wss://relay.damus.io"
+    return [single]
+
+
+class NipaeClient:
+    """High-level NIP-AE client.
+
+    Reads NIPAE_NSEC / NIPAE_OWNER / NIPAE_RELAY / NIPAE_RELAYS from the
+    environment on construction (same contract as the CLI).  All async work
+    is hidden behind asyncio.run() so callers stay synchronous.
+
+    Multi-relay write: tries each relay in order, stops on first success.
+    Multi-relay read:  queries all relays in parallel, merges by event id.
+    """
+
+    def __init__(
+        self,
+        seckey: bytes | None = None,
+        owner_pubkey: bytes | None = None,
+        relays: list[str] | None = None,
+    ):
+        if seckey is None:
+            nsec = os.environ.get("NIPAE_NSEC", "").strip()
+            if not nsec:
+                raise ValueError("NIPAE_NSEC not set")
+            seckey = nsec_decode(nsec) if nsec.startswith("nsec1") else bytes.fromhex(nsec)
+        self._sk = seckey
+        self._pub = pubkey_from_secret(int.from_bytes(seckey, "big"))
+        if owner_pubkey is None:
+            owner_hex = os.environ.get("NIPAE_OWNER", "").strip()
+            if owner_hex:
+                owner_pubkey = bytes.fromhex(owner_hex) if not owner_hex.startswith("npub1") \
+                    else npub_decode(owner_hex)
+            else:
+                owner_pubkey = self._pub
+        self._owner = owner_pubkey
+        self._kc = conversation_key(self._sk, self._owner)
+        self._relays: list[str] = relays if relays else _load_relays()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _build_and_publish(self, slug: str, body: dict) -> bool:
+        """Build an engram event and publish it to the relay list.
+
+        Tries each relay in order; returns True on first success, False if
+        every relay fails.
+        """
+        ev = build_event(slug, body, self._sk, self._owner)
+        import asyncio
+        for relay in self._relays:
+            try:
+                res = asyncio.run(publish(relay, ev))
+                if res.get("ok"):
+                    return True
+                print(f"[minipae] relay {relay} rejected: {res.get('message', '')}", flush=True)
+            except Exception as exc:
+                print(f"[minipae] relay {relay} error: {type(exc).__name__}: {exc}", flush=True)
+        return False
+
+    def _query_all(self, since: int | None = None) -> list[dict]:
+        """Query all configured relays in parallel, deduplicate by event id."""
+        import asyncio
+        return asyncio.run(query_multi(self._relays, [self._pub.hex()], since=since))
+
+    # ------------------------------------------------------------------
+    # Core single-entry API
+    # ------------------------------------------------------------------
+
+    def set(self, slug: str, value: str) -> bool:
+        """Publish a single engram.  Returns True on success."""
+        if not validate_slug(slug):
+            raise ValueError(f"invalid slug: {slug!r}")
+        body = {
+            "slug": slug,
+            "value": value,
+            "provenance": {
+                "schema": "nip-ae-provenance/v1",
+                "created_by": self._pub.hex(),
+                "created_at": int(time.time()),
+            },
+        }
+        ok = self._build_and_publish(slug, body)
+        status = "ok" if ok else "FAIL"
+        print(f"[minipae] set {slug}: {status}", flush=True)
+        return ok
+
+    def get(self, slug: str) -> str | None:
+        """Fetch the current head value for slug, or None if absent/tombstoned."""
+        if not validate_slug(slug):
+            raise ValueError(f"invalid slug: {slug!r}")
+        events = self._query_all()
+        heads = select_heads(events, self._kc)
+        want = d_tag(slug, self._kc)
+        ev = heads.get(want)
+        if not ev:
+            return None
+        try:
+            body = decode_body(ev, self._kc)
+        except Exception:
+            return None
+        return body.get("value")  # None means tombstoned
+
+    # ------------------------------------------------------------------
+    # Batch publishing (feature 1)
+    # ------------------------------------------------------------------
+
+    def batch_set(self, entries: list[tuple[str, str]]) -> list[bool]:
+        """Publish a list of (slug, value) pairs as NIP-AE engrams.
+
+        Returns a parallel list of booleans: True = accepted by at least one
+        relay, False = every relay rejected or errored.  Continues on failure
+        — a single bad entry does not abort the batch.
+        """
+        results: list[bool] = []
+        for idx, (slug, value) in enumerate(entries):
+            print(f"[minipae] batch_set [{idx + 1}/{len(entries)}] {slug}", flush=True)
+            try:
+                ok = self.set(slug, value)
+            except Exception as exc:
+                print(f"[minipae] batch_set SKIP {slug}: {type(exc).__name__}: {exc}", flush=True)
+                ok = False
+            results.append(ok)
+        return results
+
+    # ------------------------------------------------------------------
+    # Sync state cursor (feature 3)
+    # ------------------------------------------------------------------
+
+    def get_sync_cursor(self) -> float:
+        """Return the last-successfully-published timestamp stored in
+        sys/sync_cursor, or 0.0 if never set."""
+        val = self.get(SYNC_CURSOR_SLUG)
+        if val is None:
+            return 0.0
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.0
+
+    def set_sync_cursor(self, ts: float) -> bool:
+        """Persist *ts* as the sync cursor engram at sys/sync_cursor."""
+        return self.set(SYNC_CURSOR_SLUG, str(ts))
 
 
 # --------------------------------------------------------------------------
