@@ -112,3 +112,16 @@ test vectors, padding boundaries, tamper/wrong-key rejection, head selection,
 NIP-42 auth frame parsing against captured live relay frames, the bridge
 agent, both live skills, the runtime registry schema, and the merged-view
 namespace separation.
+
+---
+
+## Absorbed Modules (Wave 6 — 2026-09-13)
+
+| Module | Source | Nostr Kinds | Role |
+|--------|--------|-------------|------|
+| `memory/buzz/` | Buzz | 36000–36003 | Buzz memory mesh (NIP iranti) |
+| `integrations/supermemory/` | supermemory | — | External memory API integration |
+
+Pending absorption (not present locally at wave time):
+- `memory/iranti/` ← iranti repo (NIP kinds 36000–36003)
+- `memory/triune/` ← Triune-Memory (episodic/semantic/procedural orchestrator)
