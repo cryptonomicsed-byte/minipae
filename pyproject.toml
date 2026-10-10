@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minipae"
+version = "0.1.0"
+description = "NIP-AE engram substrate: BIP-340 + NIP-44 v2 memory over Nostr"
+requires-python = ">=3.11"
+# No runtime dependencies are declared on purpose. The wire crypto is
+# stdlib-only; optional adapters (buzz, grpc, commonly) pull their own extras
+# in the environment that uses them. Declaring them here would force every
+# consumer of the core to install an adapter stack they never call.
+dependencies = []
+
+[tool.setuptools]
+# Top-level modules, not a package: consumers do `import minipae`.
+py-modules = [
+    "minipae",
+    "derive",
+    "cap_bridge",
+    "cross_relay_read",
+    "daemon_adapter",
+    "ga_bridge",
+    "hermes_adapter",
+    "merged_view",
+    "omokoda_adapter",
+]
