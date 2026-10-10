@@ -621,5 +621,65 @@ class TestNip32Labels(unittest.TestCase):
             m.label_tags("ns")
 
 
+class TestClientList(unittest.TestCase):
+    """NipaeClient.list() — the prefix read agent-voice uses to load
+    mem/card/<id>/* in one query instead of N gets."""
+
+    def _client(self):
+        """A client with no relays, built without touching the environment."""
+        c = m.NipaeClient.__new__(m.NipaeClient)
+        sk = m.secrets.token_bytes(32)
+        pk = m.pubkey_from_secret(int.from_bytes(sk, "big"))
+        c._sk, c._pub, c._owner = sk, pk, pk
+        c._kc = m.conversation_key(sk, pk)
+        c._relays = []
+        return c, sk, pk
+
+    def test_filters_by_prefix_and_omits_tombstones(self):
+        client, sk, pk = self._client()
+        events = [
+            m.build_event("mem/card/kings-cut/note",
+                          {"slug": "mem/card/kings-cut/note", "value": "v1"}, sk, pk),
+            m.build_event("mem/card/other-shop/note",
+                          {"slug": "mem/card/other-shop/note", "value": "v2"}, sk, pk),
+            m.build_event("mem/card/kings-cut/dead",
+                          {"slug": "mem/card/kings-cut/dead", "value": None}, sk, pk),
+        ]
+        client._query_all = lambda since=None: events
+
+        one = client.list("mem/card/kings-cut/")
+        self.assertEqual(one, {"mem/card/kings-cut/note": "v1"})
+
+        everything = client.list()
+        self.assertIn("mem/card/other-shop/note", everything)
+        self.assertNotIn("mem/card/kings-cut/dead", everything)  # tombstoned
+
+    def test_newest_head_wins(self):
+        client, sk, pk = self._client()
+        old = m.build_event("mem/card/c/k", {"slug": "mem/card/c/k", "value": "old"}, sk, pk)
+        new = dict(m.build_event("mem/card/c/k", {"slug": "mem/card/c/k", "value": "new"}, sk, pk))
+        new["created_at"] = old["created_at"] + 10
+        client._query_all = lambda since=None: [new, old]
+        self.assertEqual(client.list("mem/card/c/"), {"mem/card/c/k": "new"})
+
+    def test_no_prefix_returns_everything_held(self):
+        client, sk, pk = self._client()
+        client._query_all = lambda since=None: [
+            m.build_event("mem/a", {"slug": "mem/a", "value": "1"}, sk, pk),
+            m.build_event("mem/b", {"slug": "mem/b", "value": "2"}, sk, pk),
+        ]
+        self.assertEqual(client.list(), {"mem/a": "1", "mem/b": "2"})
+
+    def test_junk_events_never_break_the_read(self):
+        client, sk, pk = self._client()
+        good = m.build_event("mem/a", {"slug": "mem/a", "value": "1"}, sk, pk)
+        junk = dict(m.build_event("mem/z", {"slug": "mem/z", "value": "x"}, sk, pk))
+        junk["content"] = "not-a-valid-nip44-payload"  # corrupt -> undecodable
+        client._query_all = lambda since=None: [junk, good]
+        got = client.list()  # must not raise regardless of how junk is handled
+        self.assertEqual(got.get("mem/a"), "1")
+        self.assertNotIn("mem/z", got)
+
+
 if __name__ == "__main__":
     unittest.main()

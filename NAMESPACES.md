@@ -37,6 +37,7 @@ per the locked plan).
 | `mem/loom/*`    | Loom agent-collaboration pool              | planned  |
 | `mem/triune/*`  | Triune-Memory orchestrator phase state     | planned  |
 | `mem/phone/*`   | agent-phone identity binding, voicemail    | planned  |
+| `mem/card/*`    | Per-card agent memory (agent-voice CardMemory; `mem/card/<card-id>/<key>`) | active |
 
 ## Which implementation to use
 

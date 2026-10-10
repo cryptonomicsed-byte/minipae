@@ -1259,6 +1259,30 @@ class NipaeClient:
             return None
         return body.get("value")  # None means tombstoned
 
+    def list(self, prefix: str | None = None) -> dict[str, str]:
+        """Return current head values for every engram this agent holds.
+
+        `prefix` optionally filters to slugs starting with it — e.g.
+        ``list("mem/card/kings-cut/")`` returns one card's whole memory in a
+        single relay query instead of N gets. Tombstoned entries (value None)
+        are omitted. Read-only: same head selection as ``get()``, no writes.
+        """
+        heads = select_heads(self._query_all(), self._kc)
+        out: dict[str, str] = {}
+        for ev in heads.values():
+            try:
+                body = decode_body(ev, self._kc)
+            except Exception:
+                continue
+            slug = body.get("slug")
+            val = body.get("value")
+            if not slug or val is None:
+                continue
+            if prefix and not str(slug).startswith(prefix):
+                continue
+            out[str(slug)] = val
+        return out
+
     # ------------------------------------------------------------------
     # Batch publishing (feature 1)
     # ------------------------------------------------------------------
