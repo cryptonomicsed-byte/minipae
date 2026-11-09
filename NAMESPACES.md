@@ -38,6 +38,7 @@ per the locked plan).
 | `mem/triune/*`  | Triune-Memory orchestrator phase state     | planned  |
 | `mem/phone/*`   | agent-phone identity binding, voicemail    | planned  |
 | `mem/card/*`    | Per-card agent memory (agent-voice CardMemory; `mem/card/<card-id>/<key>`) | active |
+| `mem/decision/*` | Trading decisions + input/outcome refs (`decisions.py`, `decision_record/1`; flag MINIPAE_DECISIONS_ENABLED) | active (flag off) |
 
 ## Which implementation to use
 

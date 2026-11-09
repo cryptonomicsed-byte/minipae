@@ -25,4 +25,5 @@ py-modules = [
     "hermes_adapter",
     "merged_view",
     "omokoda_adapter",
+    "decisions",
 ]

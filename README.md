@@ -30,6 +30,13 @@ what's genuinely done vs. still open.
 
 Verified against the official NIP-44 test vectors and pycryptodome's ChaCha20.
 
+**Trading-decision memory (`decisions.py`, flag `MINIPAE_DECISIONS_ENABLED`, default off)**
+- Stores each trading decision as a `decision_record/1` engram at `mem/decision/<id>`:
+  the decision, its input refs (`signal:`/`ledger:`/`pool:`...), decider, optional
+  context, and outcome refs appended later. Immutable per id (idempotent re-record,
+  conflicting re-record raises); `get`, `list(symbol/since/until/input_ref)`,
+  `attach_outcome`. Works over `NipaeClient` (relay) or `InMemoryStore`.
+
 **Live integrations built on the core library**
 - `ga_bridge.py` — a real, SDK-connected OpenAgents↔Buzz bridge agent. Mirrors
   OpenAgents channel messages into authenticated `mem/ga/channel/<channel>/<event_id>`
