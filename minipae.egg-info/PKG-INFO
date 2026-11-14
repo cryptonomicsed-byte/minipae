@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: minipae
+Version: 0.1.0
+Summary: NIP-AE engram substrate: BIP-340 + NIP-44 v2 memory over Nostr
+Requires-Python: >=3.11
